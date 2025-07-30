@@ -50,12 +50,20 @@ def download_pdf(file_id, create_date, claim_id, config):
 
         # Download with proper headers
         headers = {
-            "User-Agent": "BYD-PDF-Download-Service/1.0",
-            "Accept": "application/pdf",
-            # TODO: ADD THE OTHER HEADERS HERE
+            "User-Agent": config["api"]["headers"]["User-Agent"],
+            "Accept": config["api"]["headers"]["Accept"],
+            "APP_ID": config["api"]["headers"]["APP_ID"],
+            "SECRET_KEY": config["api"]["headers"]["SECRET_KEY"],
         }
 
-        response = requests.get(full_url, headers=headers, timeout=60, stream=True)
+        response = requests.get(
+            full_url,
+            headers=headers,
+            timeout=config["download"]["timeout_seconds"],
+            stream=True,
+            verify=config["api"]["verify_ssl"],
+            allow_redirects=config["api"]["allow_redirects"],
+        )
         response.raise_for_status()
 
         # Save file in chunks to handle large files
@@ -65,13 +73,22 @@ def download_pdf(file_id, create_date, claim_id, config):
                     f.write(chunk)
 
         # Verify file was saved and has content
-        if os.path.exists(local_filepath) and os.path.getsize(local_filepath) > 0:
-            logger.info(
-                f"✅ Successfully saved: {local_filepath} ({os.path.getsize(local_filepath)} bytes)"
-            )
-            return local_filepath, None
+        file_size = os.path.getsize(local_filepath)
+        min_size = config["file_validation"]["min_file_size"]
+        max_size = config["file_validation"]["max_file_size"]
+
+        if os.path.exists(local_filepath) and file_size > min_size:
+            if file_size <= max_size:
+                logger.info(
+                    f"✅ Successfully saved: {local_filepath} ({file_size} bytes)"
+                )
+                return local_filepath, None
+            else:
+                error_msg = f"File size ({file_size} bytes) exceeds maximum allowed ({max_size} bytes)"
+                logger.error(f"❌ {error_msg}")
+                return None, error_msg
         else:
-            error_msg = "File was downloaded but appears to be empty"
+            error_msg = f"File was downloaded but appears to be empty or too small (size: {file_size} bytes)"
             logger.error(f"❌ {error_msg}")
             return None, error_msg
 
@@ -99,15 +116,9 @@ def run_download_process():
         f"\n🚀 Starting PDF download cycle at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
     )
     config = db_handler.load_config()
-    connection = None
 
     try:
-        connection = db_handler.get_db_connection()
-        if not connection:
-            logger.error("Failed to establish database connection")
-            return
-
-        files_to_download_df = db_handler.get_new_files_to_download(connection)
+        files_to_download_df = db_handler.get_new_files_to_download()
 
         if files_to_download_df.empty:
             logger.info("No new files to download. Ending cycle.")
@@ -131,7 +142,6 @@ def run_download_process():
             if local_path and error is None:
                 # Success
                 db_handler.log_download_status(
-                    connection=connection,
                     file_id=file_id,
                     claim_id=claim_id,
                     claim_no=row["CLAIM_NO"],
@@ -143,7 +153,6 @@ def run_download_process():
             else:
                 # Failed
                 db_handler.log_download_status(
-                    connection=connection,
                     file_id=file_id,
                     claim_id=claim_id,
                     claim_no=row["CLAIM_NO"],
@@ -154,16 +163,41 @@ def run_download_process():
                 )
                 failed_downloads += 1
 
+            # Add delay between downloads if configured
+            if config.get("download", {}).get("delay_between_downloads", 0) > 0:
+                import time
+
+                time.sleep(config["download"]["delay_between_downloads"])
+
         logger.info(
             f"📊 Download cycle completed: {successful_downloads} successful, {failed_downloads} failed"
         )
 
+        # Log statistics if enabled
+        if config.get("monitoring", {}).get("log_statistics", False):
+            try:
+                stats_df = db_handler.get_download_statistics()
+                if not stats_df.empty:
+                    logger.info("📈 Download Statistics:")
+                    for _, row in stats_df.iterrows():
+                        logger.info(
+                            f"   {row['STATUS']}: {row['COUNT']} files ({row['PERCENTAGE']}%)"
+                        )
+            except Exception as e:
+                logger.error(f"Error logging statistics: {e}")
+
+        # Cleanup old failed records if enabled
+        if config.get("monitoring", {}).get("cleanup_enabled", False):
+            try:
+                retention_days = config["monitoring"]["cleanup_retention_days"]
+                deleted_count = db_handler.cleanup_old_failed_records(retention_days)
+                if deleted_count > 0:
+                    logger.info(f"🧹 Cleaned up {deleted_count} old failed records")
+            except Exception as e:
+                logger.error(f"Error during cleanup: {e}")
+
     except Exception as e:
         logger.error(f"🚨 Critical error in main process: {e}")
-    finally:
-        if connection:
-            connection.close()
-            logger.info("Database connection closed.")
 
 
 if __name__ == "__main__":
@@ -172,7 +206,7 @@ if __name__ == "__main__":
         config = db_handler.load_config()
 
         # Validate required config sections
-        required_sections = ["database", "download", "scheduler", "query_params"]
+        required_sections = ["download", "scheduler", "logging", "monitoring"]
         for section in required_sections:
             if section not in config:
                 raise ValueError(f"Missing required config section: {section}")
@@ -185,6 +219,21 @@ if __name__ == "__main__":
         # Create storage directory if it doesn't exist
         os.makedirs(storage_path, exist_ok=True)
         logger.info(f"Storage directory confirmed: {storage_path}")
+
+        # Set environment mode (you can modify this or add command line argument)
+        import sys
+
+        if len(sys.argv) > 1:
+            env_mode = sys.argv[1]
+            if env_mode in ["local", "uat", "prod"]:
+                db_handler.set_environment_mode(env_mode)
+                logger.info(f"Environment mode set to: {env_mode}")
+            else:
+                logger.warning(
+                    f"Invalid environment mode: {env_mode}. Using default: local"
+                )
+        else:
+            logger.info("Using default environment mode: local")
 
     except Exception as e:
         logger.error(f"Configuration validation failed: {e}")
@@ -199,7 +248,7 @@ if __name__ == "__main__":
         run_download_process,
         "interval",
         hours=job_interval_hours,
-        max_instances=1,  # Prevent overlapping jobs
+        max_instances=config["scheduler"]["max_instances"],
     )
 
     # Run the job immediately on the first start

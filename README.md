@@ -1,21 +1,21 @@
-# How to Run the Service
+## Running Options
 
-  Fill **config.yaml**: Add your real database credentials, the server path for PDFs, and adjust the schedule.
+1. **Local Environment (default):**
 
-## Install Dependencies
+   ```bash
+   python main.py
+   ```
 
-Run in your terminal:
+2. **UAT Environment:**
 
-```Bash
-pip install -r requirements.txt
-```
+   ```bash
+   python main.py uat
+   ```
 
-## Start the Service
+3. **Production Environment:**
 
-  Run the main script from your terminal
+   ```bash
+   python main.py prod
+   ```
 
-```Bash
-python main.py
-```
-
-The service will perform an initial run immediately and then repeat the process according to the *periodicity_hours* you set in the configuration file.
+The environment parameter determines which database configuration to use (local, UAT, or production). If no parameter is provided, it defaults to "local".

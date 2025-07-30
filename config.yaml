@@ -1,38 +1,9 @@
 # PDF Download Service Configuration
-# Set the active environment
-environment: local  # Options: local, dev, test, uat, prod
-
-# Database connection details by environment
-database:
-  local:
-    user: "C##SILVERTREE#"
-    password: "test123"
-    dsn: "localhost:1521/xe"
-  dev:
-    user: "DEV_DMS"
-    password: "mcy216s-WK;l3W"
-    dsn: "10.42.253.92:1521/dms19g_pdb1"
-  test:
-    user: "test_dms"
-    password: "9y3~16,k[U8|S~"
-    dsn: "10.42.253.92:1521/dms19g_pdb1"
-  uat:
-    user: "temp_dms"
-    password: "0<wS16q:F}|o.+"
-    dsn: "10.42.253.86:1092/dms19g_pdb1"
-  prod:
-    user: "prod_dms"
-    password: "1gHH16Dkjqyj:>D"
-    dsn: "10.42.253.92:1521/dms19g_pdb1"
 
 # PDF Download settings
 download:
   base_url: "https://sadcsapi.bydauto.com/file/download?fileUrl="
   storage_path: "/mnt/sdb/bgate/pdf-claims/"  # Production path
-  # Alternative paths for different environments:
-  # local: "C:/BYD/pdf-claims/"
-  # dev: "/var/www/pdf-claims/"
-  # test: "/var/www/pdf-claims-test/"
   
   # Download behavior settings
   timeout_seconds: 60
@@ -48,22 +19,6 @@ scheduler:
   
   # Prevent overlapping jobs
   max_instances: 1
-  
-  # Job persistence (optional, for more robust scheduling)
-  # jobstore: 'sqlalchemy'
-  # jobstore_url: 'sqlite:///pdf_download_jobs.db'
-
-# Query Parameters (these are looked up dynamically, but can be overridden here)
-query_params:
-  # These values are retrieved from the database by default
-  # but can be hardcoded here if needed
-  country_id: 500036      # Brazil region ID (looked up from TM_REGION)
-  status_code: 56181016   # Payment documents status (looked up from TC_CODE)
-  
-  # Date range for processing claims (YYYY-MM-DD format)
-  date_range:
-    start: "2020-07-23"
-    end: "2025-07-23"
 
 # Logging configuration
 logging:
@@ -83,42 +38,6 @@ monitoring:
   cleanup_enabled: true
   cleanup_interval_days: 7
   cleanup_retention_days: 30
-
-# Environment-specific overrides
-environment_overrides:
-  local:
-    download:
-      storage_path: "/mnt/home/pcampos/Documents/byd/pdf-dms"
-    logging:
-      level: DEBUG
-    scheduler:
-      periodicity_hours: 0.5  # 30 minutes for testing
-  
-  dev:
-    download:
-      storage_path: "/var/www/pdf-claims-dev/"
-    scheduler:
-      periodicity_hours: 1
-  
-  test:
-    download:
-      storage_path: "/var/www/pdf-claims-test/"
-    scheduler:
-      periodicity_hours: 4
-  
-  uat:
-    download:
-      storage_path: "/mnt/sdb/bgate/pdf-claims-uat/"
-    scheduler:
-      periodicity_hours: 6
-  
-  prod:
-    download:
-      storage_path: "/mnt/sdb/bgate/pdf-claims/"
-    logging:
-      level: INFO
-    scheduler:
-      periodicity_hours: 2
 
 # API settings
 api:
@@ -161,10 +80,10 @@ file_validation:
 performance:
   # Database connection pool settings
   db_pool_size: 5
-  db_pool_timeout: 30
+  db_pool_timeout: 60
   
   # Batch processing settings
-  batch_size: 100  # Process this many files before committing to DB
+  batch_size: 20  # Process this many files before committing to DB
   
   # Memory management
   max_memory_usage_mb: 1024

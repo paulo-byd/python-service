@@ -6,6 +6,66 @@ from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
+# Global environment mode
+_ENVIRONMENT_MODE = "local"  # default to local
+
+
+def set_environment_mode(mode):
+    """Set the environment mode for database connections"""
+    global _ENVIRONMENT_MODE
+    _ENVIRONMENT_MODE = mode
+
+
+# Environment-specific database configurations
+LOCAL_CONFIG = {
+    "dms_db": {
+        "user": "DMS_OEM_SL",
+        "password": "-oVDmYP6-,=*",
+        "dsn": "10.42.253.86:1027/dms11g",
+    },
+    "bgate_db": {
+        "user": "prod_dms",
+        "password": "1gHH16Dkjqyj:>D",
+        "dsn": "10.42.253.86:1092/dms19g_pdb1",
+    },
+}
+
+UAT_CONFIG = {
+    "dms_db": {
+        "user": "DMS_OEM_SL",
+        "password": "-oVDmYP6-,=*",
+        "dsn": "10.42.253.27:1521/dms11g",
+    },
+    "bgate_db": {
+        "user": "prod_dms",
+        "password": "1gHH16Dkjqyj:>D",
+        "dsn": "10.42.253.92:1521/dms19g_pdb1",
+    },
+}
+
+PROD_CONFIG = {
+    "dms_db": {
+        "user": "DMS_OEM_SL",
+        "password": "-oVDmYP6-,=*",
+        "dsn": "10.42.253.27:1521/dms11g",
+    },
+    "bgate_db": {
+        "user": "prod_dms",
+        "password": "1gHH16Dkjqyj:>D",
+        "dsn": "10.42.253.92:1521/dms19g_pdb1",
+    },
+}
+
+
+def get_current_config():
+    """Get the current configuration based on environment mode"""
+    if _ENVIRONMENT_MODE == "uat":
+        return UAT_CONFIG
+    elif _ENVIRONMENT_MODE == "prod":
+        return PROD_CONFIG
+    else:
+        return LOCAL_CONFIG
+
 
 def load_config():
     """Loads configuration from config.yaml"""
@@ -20,24 +80,38 @@ def load_config():
         raise
 
 
-def get_db_connection():
-    """Establishes and returns a database connection."""
-    config = load_config()["database"]
+def get_dms_db_connection():
+    """Establishes and returns a connection to the DMS database (for reading)."""
+    db_config = get_current_config()["dms_db"]
     try:
         connection = oracledb.connect(
-            user=config["user"], password=config["password"], dsn=config["dsn"]
+            user=db_config["user"], password=db_config["password"], dsn=db_config["dsn"]
         )
-        logger.info("✅ Database connection established")
+        logger.info("✅ DMS Database connection established")
         return connection
     except oracledb.Error as error:
-        logger.error(f"❌ Error connecting to Oracle Database: {error}")
+        logger.error(f"❌ Error connecting to DMS Oracle Database: {error}")
+        raise
+
+
+def get_bgate_db_connection():
+    """Establishes and returns a connection to the BGATE database (for writing)."""
+    db_config = get_current_config()["bgate_db"]
+    try:
+        connection = oracledb.connect(
+            user=db_config["user"], password=db_config["password"], dsn=db_config["dsn"]
+        )
+        logger.info("✅ BGATE Database connection established")
+        return connection
+    except oracledb.Error as error:
+        logger.error(f"❌ Error connecting to BGATE Oracle Database: {error}")
         raise
 
 
 def get_region_id(connection, region_name="巴西"):
-    """Get Brazil region ID"""
+    """Get Brazil region ID from DMS database"""
     try:
-        query = "SELECT REGION_ID FROM TM_REGION WHERE REGION_NAME = :region_name"
+        query = "SELECT REGION_ID FROM DMS_OEM_PROD.TM_REGION WHERE REGION_NAME = :region_name"
         cursor = connection.cursor()
         cursor.execute(query, {"region_name": region_name})
         result = cursor.fetchone()
@@ -55,9 +129,9 @@ def get_region_id(connection, region_name="巴西"):
 
 
 def get_status_code_id(connection, type_code=5618):
-    """Get status code ID for 'Payment documents TO be audited'"""
+    """Get status code ID for 'Payment documents TO be audited' from DMS database"""
     try:
-        query = "SELECT CODE_ID FROM TC_CODE WHERE TYPE = :type_code"
+        query = "SELECT CODE_ID FROM DMS_OEM_PROD.TC_CODE WHERE TYPE = :type_code"
         cursor = connection.cursor()
         cursor.execute(query, {"type_code": type_code})
         result = cursor.fetchone()
@@ -74,70 +148,97 @@ def get_status_code_id(connection, type_code=5618):
         return None
 
 
-def get_new_files_to_download(connection):
+def get_new_files_to_download():
     """
-    Queries the database to find PDF files that have not been successfully downloaded yet.
-    Includes date range filtering as per original requirements.
+    Queries the DMS database to find PDF files that have not been successfully downloaded yet.
+    Returns a DataFrame with file information.
     """
-    config = load_config()["query_params"]
-
-    # Get region and status IDs dynamically
-    region_id = get_region_id(connection)
-    status_id = get_status_code_id(connection)
-
-    if not region_id or not status_id:
-        logger.error("Failed to get required region_id or status_id")
-        return pd.DataFrame()
-
-    # Enhanced query with date range filtering as per original requirements
-    query = """
-        SELECT
-            claims.CLAIM_ID,
-            claims.CLAIM_NO,
-            claims.VIN,
-            claims.GROSS_CREDIT,
-            claims.REPORT_DATE,
-            files.FILE_ID,
-            files.FILE_NAME,
-            files.CREATE_DATE
-        FROM
-            DMS_DEALER_PROD.SEC_TT_AS_WR_APPLICATION_V claims
-        JOIN
-            DMS_DEALER_PROD.TC_FILE_UPLOAD_INFO files ON claims.CLAIM_ID = files.BILL_ID
-        JOIN
-            DMS_DEALER_PROD.TM_DEALER td ON claims.DEALER_ID = td.DEALER_ID
-        WHERE
-            td.COUNTRY_ID = :region_id
-            AND claims.STATUS = :status_id
-            AND files.FILE_TYPE_DETAIL = '.pdf'
-            AND claims.REPORT_DATE BETWEEN TO_DATE('2020-07-23', 'YYYY-MM-DD') 
-                                        AND TO_DATE('2025-07-23', 'YYYY-MM-DD')
-            AND claims.UPDATE_DATE < TO_DATE('2025-07-23', 'YYYY-MM-DD')
-            AND NOT EXISTS (
-                SELECT 1
-                FROM PDF_DOWNLOAD_DMS_CLAIMS tracked
-                WHERE tracked.FILE_ID = files.FILE_ID 
-                AND tracked.STATUS = 'SUCCESS'
-            )
-        ORDER BY claims.REPORT_DATE ASC, files.CREATE_DATE ASC
-    """
+    dms_connection = None
+    bgate_connection = None
 
     try:
-        logger.info("🔎 Searching for new PDF files to download...")
+        # Get connections to both databases
+        dms_connection = get_dms_db_connection()
+        bgate_connection = get_bgate_db_connection()
+
+        # Get region and status IDs dynamically from DMS database
+        region_id = get_region_id(dms_connection)
+        status_id = get_status_code_id(dms_connection)
+
+        if not region_id or not status_id:
+            logger.error("Failed to get required region_id or status_id")
+            return pd.DataFrame()
+
+        # Enhanced query with date range filtering using DMS_OEM_PROD schema
+        query = """
+            SELECT
+                claims.CLAIM_ID,
+                claims.CLAIM_NO,
+                claims.VIN,
+                claims.GROSS_CREDIT,
+                claims.REPORT_DATE,
+                files.FILE_ID,
+                files.FILE_NAME,
+                files.CREATE_DATE
+            FROM
+                DMS_OEM_PROD.SEC_TT_AS_WR_APPLICATION_V claims
+            JOIN
+                DMS_OEM_PROD.TC_FILE_UPLOAD_INFO files ON claims.CLAIM_ID = files.BILL_ID
+            JOIN
+                DMS_OEM_PROD.TM_DEALER td ON claims.DEALER_ID = td.DEALER_ID
+            WHERE
+                td.COUNTRY_ID = :region_id
+                AND claims.STATUS = :status_id
+                AND files.FILE_TYPE_DETAIL = '.pdf'
+                AND claims.REPORT_DATE BETWEEN TO_DATE('2020-07-23', 'YYYY-MM-DD') 
+                                            AND SYSDATE
+                AND claims.UPDATE_DATE < SYSDATE
+            ORDER BY claims.REPORT_DATE ASC, files.CREATE_DATE ASC
+        """
+
+        logger.info("🔎 Searching for new PDF files to download from DMS database...")
         params = {
             "region_id": region_id,
             "status_id": status_id,
         }
 
-        df = pd.read_sql(query, connection, params=params)
-        logger.info(f"✅ Found {len(df)} new files to download")
+        # Execute query on DMS database
+        df = pd.read_sql(query, dms_connection, params=params)
 
-        if len(df) > 0:
+        if len(df) == 0:
+            logger.info("✅ No files found in DMS database")
+            return df
+
+        # Now check against BGATE database to filter out already downloaded files
+        file_ids = df["FILE_ID"].tolist()
+        file_ids_str = ",".join([f"'{fid}'" for fid in file_ids])
+
+        tracking_query = f"""
+            SELECT FILE_ID 
+            FROM PDF_DOWNLOAD_DMS_CLAIMS 
+            WHERE FILE_ID IN ({file_ids_str}) 
+            AND STATUS = 'SUCCESS'
+        """
+
+        # Execute tracking query on BGATE database
+        downloaded_df = pd.read_sql(tracking_query, bgate_connection)
+        downloaded_file_ids = (
+            downloaded_df["FILE_ID"].tolist() if not downloaded_df.empty else []
+        )
+
+        # Filter out already successfully downloaded files
+        df_filtered = df[~df["FILE_ID"].isin(downloaded_file_ids)]
+
+        logger.info(
+            f"✅ Found {len(df)} total files, {len(downloaded_file_ids)} already downloaded, {len(df_filtered)} new files to download"
+        )
+
+        if len(df_filtered) > 0:
             # Log some statistics
-            date_range = df["REPORT_DATE"].agg(["min", "max"])
+            date_range = df_filtered["REPORT_DATE"].agg(["min", "max"])
             logger.info(f"Date range: {date_range['min']} to {date_range['max']}")
 
-        return df
+        return df_filtered
 
     except oracledb.Error as error:
         logger.error(f"❌ Error executing query to find new files: {error}")
@@ -145,10 +246,15 @@ def get_new_files_to_download(connection):
     except Exception as error:
         logger.error(f"❌ Unexpected error in get_new_files_to_download: {error}")
         return pd.DataFrame()
+    finally:
+        # Close both connections
+        if dms_connection:
+            dms_connection.close()
+        if bgate_connection:
+            bgate_connection.close()
 
 
 def log_download_status(
-    connection,
     file_id,
     claim_id,
     claim_no,
@@ -158,7 +264,7 @@ def log_download_status(
     error_msg=None,
 ):
     """
-    Inserts or updates a record in the tracking table.
+    Inserts or updates a record in the BGATE tracking table.
     Enhanced with better error handling and logging.
     """
     sql_merge = """
@@ -195,8 +301,11 @@ def log_download_status(
             )
     """
 
+    connection = None
     cursor = None
     try:
+        # Connect to BGATE database for writing
+        connection = get_bgate_db_connection()
         cursor = connection.cursor()
 
         # Truncate error message if too long
@@ -227,7 +336,8 @@ def log_download_status(
             f"❌ Critical Error: Could not log download status for FILE_ID {file_id}. Reason: {error}"
         )
         try:
-            connection.rollback()
+            if connection:
+                connection.rollback()
         except:
             pass
         # Re-raise to let caller handle
@@ -237,18 +347,23 @@ def log_download_status(
             f"❌ Unexpected error logging download status for FILE_ID {file_id}: {error}"
         )
         try:
-            connection.rollback()
+            if connection:
+                connection.rollback()
         except:
             pass
         raise
     finally:
         if cursor:
             cursor.close()
+        if connection:
+            connection.close()
 
 
-def get_download_statistics(connection):
-    """Get download statistics for monitoring"""
+def get_download_statistics():
+    """Get download statistics for monitoring from BGATE database"""
+    connection = None
     try:
+        connection = get_bgate_db_connection()
         query = """
             SELECT 
                 STATUS,
@@ -265,11 +380,16 @@ def get_download_statistics(connection):
     except Exception as error:
         logger.error(f"Error getting download statistics: {error}")
         return pd.DataFrame()
+    finally:
+        if connection:
+            connection.close()
 
 
-def get_recent_downloads(connection, days=1):
-    """Get recent downloads for monitoring"""
+def get_recent_downloads(days=1):
+    """Get recent downloads for monitoring from BGATE database"""
+    connection = None
     try:
+        connection = get_bgate_db_connection()
         query = """
             SELECT 
                 CLAIM_NO,
@@ -289,11 +409,17 @@ def get_recent_downloads(connection, days=1):
     except Exception as error:
         logger.error(f"Error getting recent downloads: {error}")
         return pd.DataFrame()
+    finally:
+        if connection:
+            connection.close()
 
 
-def cleanup_old_failed_records(connection, days=30):
-    """Clean up old failed records to prevent table bloat"""
+def cleanup_old_failed_records(days=30):
+    """Clean up old failed records to prevent table bloat in BGATE database"""
+    connection = None
+    cursor = None
     try:
+        connection = get_bgate_db_connection()
         query = """
             DELETE FROM PDF_DOWNLOAD_DMS_CLAIMS 
             WHERE STATUS = 'FAILED' 
@@ -304,7 +430,6 @@ def cleanup_old_failed_records(connection, days=30):
         cursor.execute(query, {"days": days})
         deleted_count = cursor.rowcount
         connection.commit()
-        cursor.close()
 
         if deleted_count > 0:
             logger.info(f"Cleaned up {deleted_count} old failed records")
@@ -314,3 +439,8 @@ def cleanup_old_failed_records(connection, days=30):
     except Exception as error:
         logger.error(f"Error during cleanup: {error}")
         return 0
+    finally:
+        if cursor:
+            cursor.close()
+        if connection:
+            connection.close()
