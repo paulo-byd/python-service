@@ -164,11 +164,15 @@ def get_new_files_to_download():
     """
     dms_connection = None
     bgate_connection = None
+    dms_cursor = None
+    bgate_cursor = None
 
     try:
         # Get connections to both databases
         dms_connection = get_dms_db_connection()
         bgate_connection = get_bgate_db_connection()
+        dms_cursor = dms_connection.cursor()
+        bgate_cursor = bgate_connection.cursor()
 
         # Get region and status IDs dynamically from DMS database
         region_id = get_region_id(dms_connection)
@@ -211,12 +215,17 @@ def get_new_files_to_download():
             "status_id": status_id,
         }
 
-        # Execute query on DMS database
-        df = pd.read_sql(query, dms_connection, params=params)
-
-        if len(df) == 0:
+        # Execute query on DMS database using raw cursor
+        dms_cursor.execute(query, params)
+        results = dms_cursor.fetchall()
+        
+        if not results:
             logger.info("✅ No files found in DMS database")
-            return df
+            return pd.DataFrame()
+
+        # Convert results to DataFrame
+        columns = ['CLAIM_ID', 'CLAIM_NO', 'VIN', 'GROSS_CREDIT', 'REPORT_DATE', 'FILE_ID', 'FILE_NAME', 'CREATE_DATE']
+        df = pd.DataFrame(results, columns=columns)
 
         # Now check against BGATE database to filter out already downloaded files
         file_ids = df["FILE_ID"].tolist()
@@ -229,11 +238,10 @@ def get_new_files_to_download():
             AND STATUS = 'SUCCESS'
         """
 
-        # Execute tracking query on BGATE database
-        downloaded_df = pd.read_sql(tracking_query, bgate_connection)
-        downloaded_file_ids = (
-            downloaded_df["FILE_ID"].tolist() if not downloaded_df.empty else []
-        )
+        # Execute tracking query on BGATE database using raw cursor
+        bgate_cursor.execute(tracking_query)
+        downloaded_results = bgate_cursor.fetchall()
+        downloaded_file_ids = [row[0] for row in downloaded_results] if downloaded_results else []
 
         # Filter out already successfully downloaded files
         df_filtered = df[~df["FILE_ID"].isin(downloaded_file_ids)]
@@ -256,7 +264,11 @@ def get_new_files_to_download():
         logger.error(f"❌ Unexpected error in get_new_files_to_download: {error}")
         return pd.DataFrame()
     finally:
-        # Close both connections
+        # Close cursors and connections
+        if dms_cursor:
+            dms_cursor.close()
+        if bgate_cursor:
+            bgate_cursor.close()
         if dms_connection:
             dms_connection.close()
         if bgate_connection:
@@ -371,8 +383,10 @@ def log_download_status(
 def get_download_statistics():
     """Get download statistics for monitoring from BGATE database"""
     connection = None
+    cursor = None
     try:
         connection = get_bgate_db_connection()
+        cursor = connection.cursor()
         query = """
             SELECT 
                 STATUS,
@@ -383,13 +397,23 @@ def get_download_statistics():
             ORDER BY COUNT DESC
         """
 
-        df = pd.read_sql(query, connection)
+        cursor.execute(query)
+        results = cursor.fetchall()
+        
+        if not results:
+            return pd.DataFrame()
+            
+        # Convert results to DataFrame
+        columns = ['STATUS', 'COUNT', 'PERCENTAGE']
+        df = pd.DataFrame(results, columns=columns)
         return df
 
     except Exception as error:
         logger.error(f"Error getting download statistics: {error}")
         return pd.DataFrame()
     finally:
+        if cursor:
+            cursor.close()
         if connection:
             connection.close()
 
@@ -397,8 +421,10 @@ def get_download_statistics():
 def get_recent_downloads(days=1):
     """Get recent downloads for monitoring from BGATE database"""
     connection = None
+    cursor = None
     try:
         connection = get_bgate_db_connection()
+        cursor = connection.cursor()
         query = """
             SELECT 
                 CLAIM_NO,
@@ -412,13 +438,23 @@ def get_recent_downloads(days=1):
             ORDER BY DOWNLOAD_TIMESTAMP DESC
         """
 
-        df = pd.read_sql(query, connection, params={"days": days})
+        cursor.execute(query, {"days": days})
+        results = cursor.fetchall()
+        
+        if not results:
+            return pd.DataFrame()
+            
+        # Convert results to DataFrame
+        columns = ['CLAIM_NO', 'FILE_ID', 'REMOTE_FILE_NAME', 'STATUS', 'DOWNLOAD_TIMESTAMP', 'ERROR_MESSAGE']
+        df = pd.DataFrame(results, columns=columns)
         return df
 
     except Exception as error:
         logger.error(f"Error getting recent downloads: {error}")
         return pd.DataFrame()
     finally:
+        if cursor:
+            cursor.close()
         if connection:
             connection.close()
 
