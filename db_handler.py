@@ -31,8 +31,8 @@ LOCAL_CONFIG = {
         "dsn": "10.42.253.86:1027/dms11g",
     },
     "bgate_db": {
-        "user": "C##SILVERTREE",
-        "password": "test123",
+        "user": "temp_dms",
+        "password": "0<wS16q:F}|o.+",
         "dsn": "10.42.253.86:1092/dms19g_pdb1",
     },
 }
@@ -46,7 +46,7 @@ UAT_CONFIG = {
     "bgate_db": {
         "user": "temp_dms",
         "password": "0<wS16q:F}|o.+",
-        "dsn": "10.42.253.86:1092/dms19g_pdb1",
+        "dsn": "10.42.253.92:1521/dms19g_pdb1",
     },
 }
 
