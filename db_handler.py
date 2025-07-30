@@ -4,6 +4,9 @@ import yaml
 import logging
 from datetime import datetime, timedelta
 
+# Initialize Thick Mode
+oracledb.init_oracle_client()
+
 # Initialize Oracle client for THICK mode
 try:
     oracledb.init_oracle_client()
@@ -135,23 +138,62 @@ def get_region_id(connection, region_name="巴西"):
         return None
 
 
-def get_status_code_id(connection, type_code=5618):
-    """Get status code ID for 'Payment documents TO be audited' from DMS database"""
+def get_status_code_id(connection, type_code=5618, target_description="待审核付款凭证"):
+    """
+    Get status code ID for 'Payment documents TO be audited' from DMS database
+    Searches by CODE_DESC to find the correct CODE_ID
+    """
     try:
-        query = "SELECT CODE_ID FROM DMS_OEM_PROD.TC_CODE WHERE TYPE = :type_code"
+        query = """
+            SELECT CODE_ID, CODE_DESC 
+            FROM DMS_OEM_PROD.TC_CODE 
+            WHERE TYPE = :type_code 
+            AND CODE_DESC = :target_description
+        """
         cursor = connection.cursor()
-        cursor.execute(query, {"type_code": type_code})
+        cursor.execute(
+            query, {"type_code": type_code, "target_description": target_description}
+        )
         result = cursor.fetchone()
         cursor.close()
 
         if result:
+            code_id = result[0]
+            code_desc = result[1]
             logger.info(
-                f"Found status code ID {result[0]} for type {type_code} (expected: 56181016)"
+                f"Found status code ID {code_id} for description '{code_desc}' (type {type_code})"
             )
-            return result[0]
+            return code_id
         else:
-            logger.error(f"Status code type {type_code} not found")
+            # If exact match fails, try to find all codes for this type for debugging
+            logger.warning(
+                f"Exact match not found for '{target_description}'. Searching all codes for type {type_code}..."
+            )
+
+            debug_query = """
+                SELECT CODE_ID, CODE_DESC 
+                FROM DMS_OEM_PROD.TC_CODE 
+                WHERE TYPE = :type_code
+                ORDER BY CODE_ID
+            """
+            cursor = connection.cursor()
+            cursor.execute(debug_query, {"type_code": type_code})
+            debug_results = cursor.fetchall()
+            cursor.close()
+
+            logger.info(f"Available codes for type {type_code}:")
+            for code_id, code_desc in debug_results:
+                logger.info(f"  {code_id}: {code_desc}")
+                # Try partial match as fallback
+                if target_description in code_desc:
+                    logger.info(f"Found partial match: {code_id} - {code_desc}")
+                    return code_id
+
+            logger.error(
+                f"Status code with description '{target_description}' not found for type {type_code}"
+            )
             return None
+
     except oracledb.Error as error:
         logger.error(f"Error getting status code ID: {error}")
         return None
