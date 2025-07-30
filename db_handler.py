@@ -94,10 +94,10 @@ def get_dms_db_connection():
         connection = oracledb.connect(
             user=db_config["user"], password=db_config["password"], dsn=db_config["dsn"], mode=oracledb.DEFAULT_AUTH
         )
-        logger.info("✅ DMS Database connection established (THICK mode)")
+        logger.info("DMS Database connection established (THICK mode)")
         return connection
     except oracledb.Error as error:
-        logger.error(f"❌ Error connecting to DMS Oracle Database (THICK mode): {error}")
+        logger.error(f"Error connecting to DMS Oracle Database (THICK mode): {error}")
         raise
 
 
@@ -108,10 +108,10 @@ def get_bgate_db_connection():
         connection = oracledb.connect(
             user=db_config["user"], password=db_config["password"], dsn=db_config["dsn"], mode=oracledb.DEFAULT_AUTH
         )
-        logger.info("✅ BGATE Database connection established (THICK mode)")
+        logger.info("BGATE Database connection established (THICK mode)")
         return connection
     except oracledb.Error as error:
-        logger.error(f"❌ Error connecting to BGATE Oracle Database: {error}")
+        logger.error(f"Error connecting to BGATE Oracle Database: {error}")
         raise
 
 
