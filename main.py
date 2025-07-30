@@ -48,12 +48,13 @@ def download_pdf(file_id, create_date, claim_id, config):
         logger.info(f"Downloading from: {full_url}")
         logger.info(f"Saving to: {local_filepath}")
 
-        # Download with proper headers
+        # Download with proper headers (as per API documentation)
         headers = {
             "User-Agent": config["api"]["headers"]["User-Agent"],
             "Accept": config["api"]["headers"]["Accept"],
             "APP_ID": config["api"]["headers"]["APP_ID"],
             "SECRET_KEY": config["api"]["headers"]["SECRET_KEY"],
+            "Content-Type": "application/json",
         }
 
         response = requests.get(

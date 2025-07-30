@@ -1,0 +1,15 @@
+2025-07-30 15:07:13,057 - INFO - Storage directory confirmed: /home/pcampos/bgate/pdf-claims/
+2025-07-30 15:07:13,058 - INFO - Using default environment mode: local
+2025-07-30 15:07:13,059 - INFO - Adding job tentatively -- it will be properly scheduled when the scheduler starts
+2025-07-30 15:07:13,059 - INFO - Running the first download process immediately...
+2025-07-30 15:07:13,059 - INFO - 
+🚀 Starting PDF download cycle at 2025-07-30 15:07:13
+2025-07-30 15:07:33,082 - ERROR - ❌ Error connecting to DMS Oracle Database: DPY-6005: cannot connect to database (CONNECTION_ID=zu1ybXHPRY7BGi91AoXmGQ==).
+timed out
+2025-07-30 15:07:33,082 - ERROR - ❌ Error executing query to find new files: DPY-6005: cannot connect to database (CONNECTION_ID=zu1ybXHPRY7BGi91AoXmGQ==).
+timed out
+2025-07-30 15:07:33,086 - INFO - No new files to download. Ending cycle.
+2025-07-30 15:07:33,086 - INFO - 🕒 Scheduler started. Will run every 2 hours.
+2025-07-30 15:07:33,088 - INFO - Added job "run_download_process" to job store "default"
+2025-07-30 15:07:33,088 - INFO - Scheduler started
+2025-07-30 15:07:43,548 - INFO - Scheduler stopped by user.

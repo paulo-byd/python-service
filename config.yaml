@@ -3,7 +3,8 @@
 # PDF Download settings
 download:
   base_url: "https://sadcsapi.bydauto.com/file/download?fileUrl="
-  storage_path: "/mnt/sdb/bgate/pdf-claims/"  # Production path
+  # storage_path: "/mnt/sdb/bgate/pdf-claims/"  # Production path
+  storage_path: "/home/pcampos/bgate/pdf-claims/"  # Paulo's local path
   
   # Download behavior settings
   timeout_seconds: 60

@@ -24,8 +24,8 @@ LOCAL_CONFIG = {
         "dsn": "10.42.253.86:1027/dms11g",
     },
     "bgate_db": {
-        "user": "prod_dms",
-        "password": "1gHH16Dkjqyj:>D",
+        "user": "C##SILVERTREE",
+        "password": "test123",
         "dsn": "10.42.253.86:1092/dms19g_pdb1",
     },
 }
@@ -37,9 +37,9 @@ UAT_CONFIG = {
         "dsn": "10.42.253.27:1521/dms11g",
     },
     "bgate_db": {
-        "user": "prod_dms",
-        "password": "1gHH16Dkjqyj:>D",
-        "dsn": "10.42.253.92:1521/dms19g_pdb1",
+        "user": "temp_dms",
+        "password": "0<wS16q:F}|o.+",
+        "dsn": "10.42.253.86:1092/dms19g_pdb1",
     },
 }
 
@@ -138,7 +138,9 @@ def get_status_code_id(connection, type_code=5618):
         cursor.close()
 
         if result:
-            logger.info(f"Found status code ID {result[0]} for type {type_code}")
+            logger.info(
+                f"Found status code ID {result[0]} for type {type_code} (expected: 56181016)"
+            )
             return result[0]
         else:
             logger.error(f"Status code type {type_code} not found")
