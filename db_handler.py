@@ -4,7 +4,14 @@ import yaml
 import logging
 from datetime import datetime, timedelta
 
-logger = logging.getLogger(__name__)
+# Initialize Oracle client for THICK mode
+try:
+    oracledb.init_oracle_client()
+    logger = logging.getLogger(__name__)
+    logger.info("✅ Oracle client initialized in THICK mode")
+except Exception as e:
+    logger = logging.getLogger(__name__)
+    logger.warning(f"⚠️ Could not initialize Oracle client in THICK mode: {e}")
 
 # Global environment mode
 _ENVIRONMENT_MODE = "local"  # default to local
@@ -81,16 +88,16 @@ def load_config():
 
 
 def get_dms_db_connection():
-    """Establishes and returns a connection to the DMS database (for reading)."""
+    """Establishes and returns a connection to the DMS database (for reading) using Oracle DB THICK mode."""
     db_config = get_current_config()["dms_db"]
     try:
         connection = oracledb.connect(
-            user=db_config["user"], password=db_config["password"], dsn=db_config["dsn"]
+            user=db_config["user"], password=db_config["password"], dsn=db_config["dsn"], mode=oracledb.DEFAULT_AUTH
         )
-        logger.info("✅ DMS Database connection established")
+        logger.info("✅ DMS Database connection established (THICK mode)")
         return connection
     except oracledb.Error as error:
-        logger.error(f"❌ Error connecting to DMS Oracle Database: {error}")
+        logger.error(f"❌ Error connecting to DMS Oracle Database (THICK mode): {error}")
         raise
 
 
@@ -99,9 +106,9 @@ def get_bgate_db_connection():
     db_config = get_current_config()["bgate_db"]
     try:
         connection = oracledb.connect(
-            user=db_config["user"], password=db_config["password"], dsn=db_config["dsn"]
+            user=db_config["user"], password=db_config["password"], dsn=db_config["dsn"], mode=oracledb.DEFAULT_AUTH
         )
-        logger.info("✅ BGATE Database connection established")
+        logger.info("✅ BGATE Database connection established (THICK mode)")
         return connection
     except oracledb.Error as error:
         logger.error(f"❌ Error connecting to BGATE Oracle Database: {error}")
