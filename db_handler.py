@@ -4,6 +4,9 @@ import yaml
 import logging
 from datetime import datetime, timedelta
 
+# Initialize Thick Mode
+oracledb.init_oracle_client()
+
 logger = logging.getLogger(__name__)
 
 # Global environment mode

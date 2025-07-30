@@ -5,6 +5,20 @@ from datetime import datetime, timedelta
 from apscheduler.schedulers.blocking import BlockingScheduler
 import db_handler  # Our custom module
 import logging
+from pathlib import Path
+import json
+
+# Import the PDF processing module
+try:
+    from process_pdf_dir import run_batch_processing
+
+    PDF_PROCESSING_AVAILABLE = True
+    logger = logging.getLogger(__name__)
+    logger.info("✅ PDF processing module imported successfully")
+except ImportError as e:
+    PDF_PROCESSING_AVAILABLE = False
+    logger = logging.getLogger(__name__)
+    logger.warning(f"⚠️ PDF processing module not available: {e}")
 
 # Setup logging
 logging.basicConfig(
@@ -109,9 +123,70 @@ def download_pdf(file_id, create_date, claim_id, config):
         return None, error_msg
 
 
+def process_downloaded_pdfs(downloaded_files, config):
+    """
+    Process the downloaded PDF files using the batch processing script.
+
+    Args:
+        downloaded_files (list): List of file paths that were successfully downloaded
+        config (dict): Configuration dictionary
+
+    Returns:
+        dict: Processing results from the batch processing script
+    """
+    if not PDF_PROCESSING_AVAILABLE:
+        logger.warning("⚠️ PDF processing not available - skipping processing step")
+        return {}
+
+    if not downloaded_files:
+        logger.info("No files to process")
+        return {}
+
+    try:
+        logger.info(f"🔍 Starting PDF processing for {len(downloaded_files)} files...")
+
+        # Convert file paths to Path objects
+        pdf_file_paths = [Path(file_path) for file_path in downloaded_files]
+
+        # Run the batch processing
+        # Note: We pass an empty Path() as input_pdf_dir_path since we're providing specific files
+        processing_results_json = run_batch_processing(
+            input_pdf_dir_path=Path(),  # Not used when pdf_file_paths is provided
+            pdf_file_paths=pdf_file_paths,
+        )
+
+        # Parse the JSON results
+        processing_results = json.loads(processing_results_json)
+
+        logger.info(
+            f"✅ PDF processing completed successfully for {len(processing_results)} files"
+        )
+
+        # Log some sample results for monitoring
+        if processing_results:
+            logger.info("📄 Sample processing results:")
+            for i, (key, value) in enumerate(list(processing_results.items())[:3]):
+                logger.info(f"   {key}: {value}")
+            if len(processing_results) > 3:
+                logger.info(f"   ... and {len(processing_results) - 3} more files")
+
+        # TODO: Future enhancement - Store processing results in database
+        # This is where we would add code to store the processing results
+        # in a database table for future reference and analysis
+        # Example:
+        # db_handler.store_processing_results(processing_results)
+
+        return processing_results
+
+    except Exception as e:
+        logger.error(f"❌ Error during PDF processing: {e}")
+        return {}
+
+
 def run_download_process():
     """
     The main workflow for the PDF download service.
+    Now includes PDF processing after successful downloads.
     """
     logger.info(
         f"\n🚀 Starting PDF download cycle at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
@@ -128,6 +203,7 @@ def run_download_process():
         logger.info(f"Found {len(files_to_download_df)} files to download")
         successful_downloads = 0
         failed_downloads = 0
+        downloaded_file_paths = []  # Track successfully downloaded files for processing
 
         for index, row in files_to_download_df.iterrows():
             file_id = row["FILE_ID"]
@@ -151,6 +227,7 @@ def run_download_process():
                     status="SUCCESS",
                 )
                 successful_downloads += 1
+                downloaded_file_paths.append(local_path)  # Add to processing queue
             else:
                 # Failed
                 db_handler.log_download_status(
@@ -173,6 +250,16 @@ def run_download_process():
         logger.info(
             f"📊 Download cycle completed: {successful_downloads} successful, {failed_downloads} failed"
         )
+
+        # Process the successfully downloaded PDFs
+        if downloaded_file_paths:
+            processing_results = process_downloaded_pdfs(downloaded_file_paths, config)
+            if processing_results:
+                logger.info(
+                    f"🎯 PDF processing completed for {len(processing_results)} files"
+                )
+            else:
+                logger.warning("⚠️ PDF processing returned no results")
 
         # Log statistics if enabled
         if config.get("monitoring", {}).get("log_statistics", False):
