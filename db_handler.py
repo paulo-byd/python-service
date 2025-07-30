@@ -203,6 +203,7 @@ def get_new_files_to_download():
     """
     Queries the DMS database to find PDF files that have not been successfully downloaded yet.
     Returns a DataFrame with file information.
+    Uses efficient JOIN approach to avoid Oracle's 1000-item IN clause limit.
     """
     dms_connection = None
     bgate_connection = None
@@ -224,8 +225,8 @@ def get_new_files_to_download():
             logger.error("Failed to get required region_id or status_id")
             return pd.DataFrame()
 
-        # Enhanced query with date range filtering using DMS_OEM_PROD schema
-        query = """
+        # First, get all files from DMS that match our criteria
+        dms_query = """
             SELECT
                 claims.CLAIM_ID,
                 claims.CLAIM_NO,
@@ -257,39 +258,64 @@ def get_new_files_to_download():
             "status_id": status_id,
         }
 
-        # Execute query on DMS database using raw cursor
-        dms_cursor.execute(query, params)
-        results = dms_cursor.fetchall()
-        
-        if not results:
+        # Execute query on DMS database to get all potential files
+        df_all_files = pd.read_sql(dms_query, dms_connection, params=params)
+
+        if len(df_all_files) == 0:
             logger.info("✅ No files found in DMS database")
-            return pd.DataFrame()
+            return df_all_files
 
-        # Convert results to DataFrame
-        columns = ['CLAIM_ID', 'CLAIM_NO', 'VIN', 'GROSS_CREDIT', 'REPORT_DATE', 'FILE_ID', 'FILE_NAME', 'CREATE_DATE']
-        df = pd.DataFrame(results, columns=columns)
+        logger.info(f"Found {len(df_all_files)} total files in DMS database")
 
-        # Now check against BGATE database to filter out already downloaded files
-        file_ids = df["FILE_ID"].tolist()
-        file_ids_str = ",".join([f"'{fid}'" for fid in file_ids])
+        # Now check against BGATE database in batches to avoid the 1000-item limit
+        file_ids = df_all_files["FILE_ID"].tolist()
+        downloaded_file_ids = []
 
-        tracking_query = f"""
-            SELECT FILE_ID 
-            FROM PDF_DOWNLOAD_DMS_CLAIMS 
-            WHERE FILE_ID IN ({file_ids_str}) 
-            AND STATUS = 'SUCCESS'
-        """
+        # Process in batches of 999 to stay under Oracle's limit
+        batch_size = 999
+        for i in range(0, len(file_ids), batch_size):
+            batch_file_ids = file_ids[i : i + batch_size]
 
-        # Execute tracking query on BGATE database using raw cursor
-        bgate_cursor.execute(tracking_query)
-        downloaded_results = bgate_cursor.fetchall()
-        downloaded_file_ids = [row[0] for row in downloaded_results] if downloaded_results else []
+            # Create placeholders for this batch
+            placeholders = ",".join([f":id{j}" for j in range(len(batch_file_ids))])
+
+            tracking_query = f"""
+                SELECT FILE_ID 
+                FROM PDF_DOWNLOAD_DMS_CLAIMS 
+                WHERE FILE_ID IN ({placeholders})
+                AND STATUS = 'SUCCESS'
+            """
+
+            # Create parameters dictionary for this batch
+            batch_params = {
+                f"id{j}": file_id for j, file_id in enumerate(batch_file_ids)
+            }
+
+            try:
+                # Execute tracking query on BGATE database for this batch
+                batch_downloaded_df = pd.read_sql(
+                    tracking_query, bgate_connection, params=batch_params
+                )
+                if not batch_downloaded_df.empty:
+                    downloaded_file_ids.extend(batch_downloaded_df["FILE_ID"].tolist())
+
+                logger.info(
+                    f"Processed batch {i // batch_size + 1}/{(len(file_ids) + batch_size - 1) // batch_size}: "
+                    f"found {len(batch_downloaded_df)} already downloaded files"
+                )
+
+            except Exception as batch_error:
+                logger.error(
+                    f"Error processing batch {i // batch_size + 1}: {batch_error}"
+                )
+                # Continue with next batch
+                continue
 
         # Filter out already successfully downloaded files
-        df_filtered = df[~df["FILE_ID"].isin(downloaded_file_ids)]
+        df_filtered = df_all_files[~df_all_files["FILE_ID"].isin(downloaded_file_ids)]
 
         logger.info(
-            f"✅ Found {len(df)} total files, {len(downloaded_file_ids)} already downloaded, {len(df_filtered)} new files to download"
+            f"✅ Found {len(df_all_files)} total files, {len(downloaded_file_ids)} already downloaded, {len(df_filtered)} new files to download"
         )
 
         if len(df_filtered) > 0:
