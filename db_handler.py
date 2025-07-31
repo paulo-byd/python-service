@@ -4,9 +4,6 @@ import yaml
 import logging
 from datetime import datetime, timedelta
 
-# Initialize Thick Mode
-oracledb.init_oracle_client()
-
 # Initialize Oracle client for THICK mode
 try:
     oracledb.init_oracle_client()
@@ -258,13 +255,18 @@ def get_new_files_to_download():
             "status_id": status_id,
         }
 
-        # Execute query on DMS database to get all potential files
-        df_all_files = pd.read_sql(dms_query, dms_connection, params=params)
-
-        if len(df_all_files) == 0:
+        # Execute query on DMS database to get all potential files using raw cursor
+        dms_cursor.execute(dms_query, params)
+        dms_results = dms_cursor.fetchall()
+        
+        if not dms_results:
             logger.info("✅ No files found in DMS database")
-            return df_all_files
+            return pd.DataFrame()
 
+        # Convert results to DataFrame
+        columns = ['CLAIM_ID', 'CLAIM_NO', 'VIN', 'GROSS_CREDIT', 'REPORT_DATE', 'FILE_ID', 'FILE_NAME', 'CREATE_DATE']
+        df_all_files = pd.DataFrame(dms_results, columns=columns)
+        
         logger.info(f"Found {len(df_all_files)} total files in DMS database")
 
         # Now check against BGATE database in batches to avoid the 1000-item limit
@@ -292,16 +294,17 @@ def get_new_files_to_download():
             }
 
             try:
-                # Execute tracking query on BGATE database for this batch
-                batch_downloaded_df = pd.read_sql(
-                    tracking_query, bgate_connection, params=batch_params
-                )
-                if not batch_downloaded_df.empty:
-                    downloaded_file_ids.extend(batch_downloaded_df["FILE_ID"].tolist())
+                # Execute tracking query on BGATE database for this batch using raw cursor
+                bgate_cursor.execute(tracking_query, batch_params)
+                batch_results = bgate_cursor.fetchall()
+                
+                if batch_results:
+                    batch_downloaded_file_ids = [row[0] for row in batch_results]
+                    downloaded_file_ids.extend(batch_downloaded_file_ids)
 
                 logger.info(
                     f"Processed batch {i // batch_size + 1}/{(len(file_ids) + batch_size - 1) // batch_size}: "
-                    f"found {len(batch_downloaded_df)} already downloaded files"
+                    f"found {len(batch_results)} already downloaded files"
                 )
 
             except Exception as batch_error:

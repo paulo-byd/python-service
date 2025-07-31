@@ -7,7 +7,8 @@ import db_handler  # Our custom module
 import logging
 from pathlib import Path
 import json
-
+import sys
+import time
 # Import the PDF processing module
 try:
     from process_pdf_dir import run_batch_processing
@@ -43,7 +44,7 @@ def download_pdf(file_id, create_date, claim_id, config):
         date_str = create_date.strftime("%Y%m%d")
 
         # Construct the file URL part exactly as specified
-        file_url_part = f"/{date_str}/{file_id}.pdf"
+        file_url_part = f"/{date_str}/{file_id}"
 
         # Full download URL - base_url already includes the path
         full_url = f"{config['download']['base_url']}{file_url_part}"
@@ -244,7 +245,6 @@ def run_download_process():
             # Add delay between downloads if configured
             if config.get("download", {}).get("delay_between_downloads", 0) > 0:
                 import time
-
                 time.sleep(config["download"]["delay_between_downloads"])
 
         logger.info(
@@ -301,15 +301,14 @@ if __name__ == "__main__":
 
         # Validate storage path
         storage_path = config["download"]["storage_path"]
-        if not os.path.isabs(storage_path):
-            raise ValueError(f"Storage path must be absolute: {storage_path}")
+        #if not os.path.isabs(storage_path):
+        #    raise ValueError(f"Storage path must be absolute: {storage_path}")
 
         # Create storage directory if it doesn't exist
         os.makedirs(storage_path, exist_ok=True)
         logger.info(f"Storage directory confirmed: {storage_path}")
 
         # Set environment mode (you can modify this or add command line argument)
-        import sys
 
         if len(sys.argv) > 1:
             env_mode = sys.argv[1]
