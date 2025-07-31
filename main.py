@@ -124,12 +124,12 @@ def download_pdf(file_id, create_date, claim_id, config):
         return None, error_msg
 
 
-def process_downloaded_pdfs(downloaded_files, config):
+def process_unprocessed_pdfs(config):
     """
-    Process the downloaded PDF files using the batch processing script.
+    Process all successfully downloaded PDF files that haven't been processed yet.
+    This runs after all download cycles to batch process accumulated files.
 
     Args:
-        downloaded_files (list): List of file paths that were successfully downloaded
         config (dict): Configuration dictionary
 
     Returns:
@@ -139,28 +139,62 @@ def process_downloaded_pdfs(downloaded_files, config):
         logger.warning("⚠️ PDF processing not available - skipping processing step")
         return {}
 
-    if not downloaded_files:
-        logger.info("No files to process")
-        return {}
-
     try:
-        logger.info(f"🔍 Starting PDF processing for {len(downloaded_files)} files...")
+        # Get all successfully downloaded files that need processing
+        connection = db_handler.get_bgate_db_connection()
+
+        # Query for files that are downloaded but not yet processed
+        # TODO: Add a PROCESSED flag to the database table to track processing status
+        # For now, we'll process all successful downloads from recent time period
+        query = """
+            SELECT LOCAL_FILE_PATH, FILE_ID, CLAIM_ID, CLAIM_NO
+            FROM PDF_DOWNLOAD_DMS_CLAIMS 
+            WHERE STATUS = 'SUCCESS' 
+            AND LOCAL_FILE_PATH IS NOT NULL
+            AND DOWNLOAD_TIMESTAMP >= SYSDATE - 1  -- Last 24 hours
+            ORDER BY DOWNLOAD_TIMESTAMP
+        """
+
+        df = pd.read_sql(query, connection)
+        connection.close()
+
+        if df.empty:
+            logger.info("No files found for processing")
+            return {}
+
+        # Filter to only files that actually exist on disk
+        existing_files = []
+        for _, row in df.iterrows():
+            file_path = row["LOCAL_FILE_PATH"]
+            if os.path.exists(file_path):
+                existing_files.append(file_path)
+            else:
+                logger.warning(f"File not found on disk: {file_path}")
+
+        if not existing_files:
+            logger.warning("No existing files found for processing")
+            return {}
+
+        logger.info(
+            f"🔍 Starting batch PDF processing for {len(existing_files)} files..."
+        )
 
         # Convert file paths to Path objects
-        pdf_file_paths = [Path(file_path) for file_path in downloaded_files]
+        pdf_file_paths = [Path(file_path) for file_path in existing_files]
 
-        # Run the batch processing
-        # Note: We pass an empty Path() as input_pdf_dir_path since we're providing specific files
+        # Run the batch processing on the entire storage directory
+        # This is more efficient than processing individual files
+        storage_path = Path(config["download"]["storage_path"])
         processing_results_json = run_batch_processing(
-            input_pdf_dir_path=Path(),  # Not used when pdf_file_paths is provided
-            pdf_file_paths=pdf_file_paths,
+            input_pdf_dir_path=storage_path,
+            pdf_file_paths=[],  # Empty list means process entire directory
         )
 
         # Parse the JSON results
         processing_results = json.loads(processing_results_json)
 
         logger.info(
-            f"✅ PDF processing completed successfully for {len(processing_results)} files"
+            f"✅ Batch PDF processing completed successfully for {len(processing_results)} files"
         )
 
         # Log some sample results for monitoring
@@ -174,13 +208,15 @@ def process_downloaded_pdfs(downloaded_files, config):
         # TODO: Future enhancement - Store processing results in database
         # This is where we would add code to store the processing results
         # in a database table for future reference and analysis
+        # Also add a PROCESSED flag to PDF_DOWNLOAD_DMS_CLAIMS table
         # Example:
         # db_handler.store_processing_results(processing_results)
+        # db_handler.mark_files_as_processed(file_ids)
 
         return processing_results
 
     except Exception as e:
-        logger.error(f"❌ Error during PDF processing: {e}")
+        logger.error(f"❌ Error during batch PDF processing: {e}")
         return {}
 
 
@@ -204,7 +240,6 @@ def run_download_process():
         logger.info(f"Found {len(files_to_download_df)} files to download")
         successful_downloads = 0
         failed_downloads = 0
-        downloaded_file_paths = []  # Track successfully downloaded files for processing
 
         for index, row in files_to_download_df.iterrows():
             file_id = row["FILE_ID"]
@@ -229,7 +264,6 @@ def run_download_process():
                     status="SUCCESS",
                 )
                 successful_downloads += 1
-                downloaded_file_paths.append(local_path)  # Add to processing queue
             else:
                 # Failed
                 db_handler.log_download_status(
@@ -251,16 +285,6 @@ def run_download_process():
         logger.info(
             f"📊 Download cycle completed: {successful_downloads} successful, {failed_downloads} failed"
         )
-
-        # Process the successfully downloaded PDFs
-        if downloaded_file_paths:
-            processing_results = process_downloaded_pdfs(downloaded_file_paths, config)
-            if processing_results:
-                logger.info(
-                    f"🎯 PDF processing completed for {len(processing_results)} files"
-                )
-            else:
-                logger.warning("⚠️ PDF processing returned no results")
 
         # Log statistics if enabled
         if config.get("monitoring", {}).get("log_statistics", False):
@@ -287,6 +311,30 @@ def run_download_process():
 
     except Exception as e:
         logger.error(f"🚨 Critical error in main process: {e}")
+
+
+def run_batch_pdf_processing():
+    """
+    Standalone function to process all accumulated PDF files.
+    This should be called after all download cycles are complete.
+    """
+    logger.info(
+        f"\n🎯 Starting batch PDF processing at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+    )
+
+    try:
+        config = db_handler.load_config()
+        processing_results = process_unprocessed_pdfs(config)
+
+        if processing_results:
+            logger.info(
+                f"🎯 Batch PDF processing completed successfully for {len(processing_results)} files"
+            )
+        else:
+            logger.info("🎯 Batch PDF processing completed - no files processed")
+
+    except Exception as e:
+        logger.error(f"🚨 Critical error in batch PDF processing: {e}")
 
 
 if __name__ == "__main__":
@@ -332,18 +380,44 @@ if __name__ == "__main__":
     scheduler = BlockingScheduler()
     job_interval_hours = config["scheduler"]["periodicity_hours"]
 
-    # Schedule the job to run periodically
+    # Schedule the download job to run periodically
     scheduler.add_job(
         run_download_process,
         "interval",
         hours=job_interval_hours,
         max_instances=config["scheduler"]["max_instances"],
+        id="download_job",
     )
 
-    # Run the job immediately on the first start
+    # Schedule PDF processing to run after downloads (offset by 30 minutes)
+    # This ensures downloads have time to complete before processing starts
+    pdf_processing_hours = config.get("pdf_processing", {}).get(
+        "interval_hours", job_interval_hours * 2
+    )
+    scheduler.add_job(
+        run_batch_pdf_processing,
+        "interval",
+        hours=pdf_processing_hours,
+        max_instances=1,
+        id="pdf_processing_job",
+    )
+
+    # Run the download job immediately on the first start
     logger.info("Running the first download process immediately...")
     run_download_process()
-    logger.info(f"🕒 Scheduler started. Will run every {job_interval_hours} hours.")
+
+    # Run PDF processing for any existing files after a short delay
+    logger.info("Running initial PDF processing after 2 minutes...")
+    scheduler.add_job(
+        run_batch_pdf_processing,
+        "date",
+        run_date=datetime.now() + timedelta(minutes=2),
+        id="initial_pdf_processing",
+    )
+
+    logger.info(f"🕒 Scheduler started.")
+    logger.info(f"   - Downloads will run every {job_interval_hours} hours")
+    logger.info(f"   - PDF processing will run every {pdf_processing_hours} hours")
     try:
         scheduler.start()
     except (KeyboardInterrupt, SystemExit):
