@@ -209,6 +209,7 @@ def run_download_process():
         for index, row in files_to_download_df.iterrows():
             file_id = row["FILE_ID"]
             claim_id = row["CLAIM_ID"]
+            logger.info(f'Processing file n°: {index} / {len(files_to_download_df)}')
             logger.info(
                 f"Processing FILE_ID: {file_id} for CLAIM_ID: {claim_id} ({index + 1}/{len(files_to_download_df)})"
             )
@@ -301,8 +302,10 @@ if __name__ == "__main__":
 
         # Validate storage path
         storage_path = config["download"]["storage_path"]
-        #if not os.path.isabs(storage_path):
-        #    raise ValueError(f"Storage path must be absolute: {storage_path}")
+
+        if db_handler._ENVIRONMENT_MODE != "local":
+            if not os.path.isabs(storage_path):
+                raise ValueError(f"Storage path must be absolute: {storage_path}")
 
         # Create storage directory if it doesn't exist
         os.makedirs(storage_path, exist_ok=True)
@@ -325,7 +328,6 @@ if __name__ == "__main__":
     except Exception as e:
         logger.error(f"Configuration validation failed: {e}")
         exit(1)
-
     # --- Scheduler Setup ---
     scheduler = BlockingScheduler()
     job_interval_hours = config["scheduler"]["periodicity_hours"]
@@ -341,7 +343,6 @@ if __name__ == "__main__":
     # Run the job immediately on the first start
     logger.info("Running the first download process immediately...")
     run_download_process()
-
     logger.info(f"🕒 Scheduler started. Will run every {job_interval_hours} hours.")
     try:
         scheduler.start()
