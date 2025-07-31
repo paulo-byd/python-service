@@ -15,7 +15,7 @@ download:
 
 # Scheduler settings
 scheduler:
-  # Run the check every 2 hours. You can also use 'minutes' or 'seconds'.
+  # Run the check every 2 hours. 
   periodicity_hours: 2
   
   # Prevent overlapping jobs
@@ -88,3 +88,39 @@ performance:
   
   # Memory management
   max_memory_usage_mb: 1024
+  
+  parallel_downloads: false  # Set to true to enable parallel downloads
+  max_workers: 4  # Number of concurrent download threads (recommend 2-6)
+  
+  # Performance logging
+  log_detailed_timing: true  # Log detailed timing for each download
+  log_performance_summary: true  # Log summary statistics after each cycle
+
+# PDF Processing Pipeline Configuration
+pdf_processing:
+  # Batch processing settings
+  max_claims_per_batch: 10        # Process this many claims at a time
+  max_files_per_processing_call: 50  # Pass max this many files to run_batch_processing()
+  
+  # Processing intervals (in hours)
+  interval_hours: 4  # How often to run PDF processing
+  
+  # Processing behavior
+  process_immediately_after_download: false  # If true, process PDFs right after downloading a complete claim
+  skip_failed_claims: true  # Skip claims that failed processing in previous attempts
+
+# Audit/Matching Pipeline Configuration  
+audit_matching:
+  # Batch processing settings
+  max_claims_per_batch: 20        # Audit this many claims at a time
+  
+  # Matching intervals (in hours)
+  interval_hours: 4  # How often to run audit matching (for scheduled runs)
+  
+  # Auto-run after downloads
+  auto_run_after_download: true   # Run audit matching automatically after each download cycle
+  
+  # Matching behavior
+  exact_amount_match: true  # Require exact match for LABOUR_AMOUNT_DMS + PART_AMOUNT_DMS
+  tolerance_percentage: 0.0  # Allow this % tolerance for amount matching (0.0 = exact match)
+  retry_rejected_claims: false  # Whether to retry claims that were rejected

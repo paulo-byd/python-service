@@ -5,6 +5,7 @@ import json
 BASE_DIR = Path(__file__).parent
 TEST_INPUT_PDF_DIRECTORY = BASE_DIR / "test_pdf_dir"
 
+
 # Pseudo function to simulate PDF processing
 def run_batch_processing(input_pdf_dir_path: Path, pdf_file_paths: list = []):
     """
@@ -20,7 +21,9 @@ def run_batch_processing(input_pdf_dir_path: Path, pdf_file_paths: list = []):
     """
     if not pdf_file_paths:
         if not input_pdf_dir_path.exists():
-            raise FileNotFoundError(f"The specified path '{input_pdf_dir_path}' does not exist.")
+            raise FileNotFoundError(
+                f"The specified path '{input_pdf_dir_path}' does not exist."
+            )
         # Get all PDFs in the directory and its subdirectories
         pdf_file_paths = list(input_pdf_dir_path.rglob("*.pdf"))
 
@@ -31,7 +34,7 @@ def run_batch_processing(input_pdf_dir_path: Path, pdf_file_paths: list = []):
         # Create the key by prefixing the hash to the file name
         key = f"{file_path_hash}_<{pdf_file.name}>"
         # Add the key-value pair to the result
-        result[key] = {"file_name" : pdf_file.name }
+        result[key] = {"file_name": pdf_file.name}
 
     # Return the result as a JSON string
     return json.dumps(result, indent=4)
@@ -43,3 +46,4 @@ if __name__ == "__main__":
     # Print the JSON dictionary in a nicely formatted way
     print("\n--- JSON Results ---")
     print(json.dumps(json.loads(pdf_results_json), indent=4, sort_keys=True))
+

@@ -92,7 +92,10 @@ def get_dms_db_connection():
     db_config = get_current_config()["dms_db"]
     try:
         connection = oracledb.connect(
-            user=db_config["user"], password=db_config["password"], dsn=db_config["dsn"], mode=oracledb.DEFAULT_AUTH
+            user=db_config["user"],
+            password=db_config["password"],
+            dsn=db_config["dsn"],
+            mode=oracledb.DEFAULT_AUTH,
         )
         logger.info("DMS Database connection established (THICK mode)")
         return connection
@@ -106,7 +109,10 @@ def get_bgate_db_connection():
     db_config = get_current_config()["bgate_db"]
     try:
         connection = oracledb.connect(
-            user=db_config["user"], password=db_config["password"], dsn=db_config["dsn"], mode=oracledb.DEFAULT_AUTH
+            user=db_config["user"],
+            password=db_config["password"],
+            dsn=db_config["dsn"],
+            mode=oracledb.DEFAULT_AUTH,
         )
         logger.info("BGATE Database connection established (THICK mode)")
         return connection
@@ -196,25 +202,98 @@ def get_status_code_id(connection, type_code=5618, target_description="待审核
         return None
 
 
-def get_new_files_to_download():
+def upsert_claim_status(claim_data):
     """
-    Queries the DMS database to find PDF files that have not been successfully downloaded yet.
-    Returns a DataFrame with file information.
-    Uses efficient JOIN approach to avoid Oracle's 1000-item IN clause limit.
+    Update or insert claim status in CLAIM_STATUS table.
+
+    Args:
+        claim_data (dict): Dictionary containing claim information with keys:
+            CLAIM_ID, CLAIM_NO, VIN, DEALER_CODE, DEALER_NAME, REPORT_DATE,
+            GROSS_CREDIT, LABOUR_AMOUNT_DMS, PART_AMOUNT_DMS, LAST_DMS_UPDATE_DATE, AUDITING_DATE
+    """
+    connection = None
+    cursor = None
+
+    try:
+        connection = get_bgate_db_connection()
+        cursor = connection.cursor()
+
+        merge_query = """
+            MERGE INTO CLAIM_STATUS dest
+            USING (
+                SELECT 
+                    :claim_id AS CLAIM_ID,
+                    :claim_no AS CLAIM_NO,
+                    :vin AS VIN,
+                    :dealer_code AS DEALER_CODE,
+                    :dealer_name AS DEALER_NAME,
+                    :report_date AS REPORT_DATE,
+                    :gross_credit AS GROSS_CREDIT,
+                    :labour_amount AS LABOUR_AMOUNT_DMS,
+                    :part_amount AS PART_AMOUNT_DMS,
+                    :last_dms_update AS LAST_DMS_UPDATE_DATE,
+                    :auditing_date AS AUDITING_DATE
+                FROM DUAL
+            ) src ON (dest.CLAIM_ID = src.CLAIM_ID)
+            WHEN MATCHED THEN
+                UPDATE SET
+                    dest.CLAIM_NO = src.CLAIM_NO,
+                    dest.VIN = src.VIN,
+                    dest.DEALER_CODE = src.DEALER_CODE,
+                    dest.DEALER_NAME = src.DEALER_NAME,
+                    dest.REPORT_DATE = src.REPORT_DATE,
+                    dest.GROSS_CREDIT = src.GROSS_CREDIT,
+                    dest.LABOUR_AMOUNT_DMS = src.LABOUR_AMOUNT_DMS,
+                    dest.PART_AMOUNT_DMS = src.PART_AMOUNT_DMS,
+                    dest.LAST_DMS_UPDATE_DATE = src.LAST_DMS_UPDATE_DATE,
+                    dest.AUDITING_DATE = src.AUDITING_DATE,
+                    dest.LAST_MODIFIED_DATE = CURRENT_TIMESTAMP
+            WHEN NOT MATCHED THEN
+                INSERT (
+                    CLAIM_ID, CLAIM_NO, VIN, DEALER_CODE, DEALER_NAME, REPORT_DATE,
+                    GROSS_CREDIT, LABOUR_AMOUNT_DMS, PART_AMOUNT_DMS, 
+                    LAST_DMS_UPDATE_DATE, AUDITING_DATE, ATTACHMENT_STATUS
+                )
+                VALUES (
+                    src.CLAIM_ID, src.CLAIM_NO, src.VIN, src.DEALER_CODE, src.DEALER_NAME, src.REPORT_DATE,
+                    src.GROSS_CREDIT, src.LABOUR_AMOUNT_DMS, src.PART_AMOUNT_DMS,
+                    src.LAST_DMS_UPDATE_DATE, src.AUDITING_DATE, 'PENDING'
+                )
+        """
+
+        cursor.execute(merge_query, claim_data)
+        connection.commit()
+
+        logger.info(f"✅ Upserted claim status for CLAIM_ID {claim_data['claim_id']}")
+
+    except Exception as error:
+        logger.error(
+            f"❌ Error upserting claim status for CLAIM_ID {claim_data.get('claim_id', 'unknown')}: {error}"
+        )
+        if connection:
+            connection.rollback()
+        raise
+    finally:
+        if cursor:
+            cursor.close()
+        if connection:
+            connection.close()
+
+
+def get_claims_needing_download():
+    """
+    Get claims that need files downloaded by comparing DMS UPDATE_DATE with stored LAST_DMS_UPDATE_DATE.
+    Returns DataFrame with claims that are new or have been updated in DMS.
     """
     dms_connection = None
     bgate_connection = None
-    dms_cursor = None
-    bgate_cursor = None
 
     try:
-        # Get connections to both databases
+        # Get connections
         dms_connection = get_dms_db_connection()
         bgate_connection = get_bgate_db_connection()
-        dms_cursor = dms_connection.cursor()
-        bgate_cursor = bgate_connection.cursor()
 
-        # Get region and status IDs dynamically from DMS database
+        # Get region and status IDs
         region_id = get_region_id(dms_connection)
         status_id = get_status_code_id(dms_connection)
 
@@ -222,7 +301,7 @@ def get_new_files_to_download():
             logger.error("Failed to get required region_id or status_id")
             return pd.DataFrame()
 
-        # First, get all files from DMS that match our criteria
+        # Updated DMS query with new fields
         dms_query = """
             SELECT
                 claims.CLAIM_ID,
@@ -230,120 +309,376 @@ def get_new_files_to_download():
                 claims.VIN,
                 claims.GROSS_CREDIT,
                 claims.REPORT_DATE,
-                files.FILE_ID,
-                files.FILE_NAME,
-                files.CREATE_DATE
+                claims.LABOUR_AMOUNT,
+                claims.PART_AMOUNT,
+                claims.AUDITING_DATE,
+                claims.UPDATE_DATE,
+                td.DEALER_CODE,
+                td.DEALER_NAME
             FROM
                 DMS_OEM_PROD.SEC_TT_AS_WR_APPLICATION_V claims
-            JOIN
-                DMS_OEM_PROD.TC_FILE_UPLOAD_INFO files ON claims.CLAIM_ID = files.BILL_ID
             JOIN
                 DMS_OEM_PROD.TM_DEALER td ON claims.DEALER_ID = td.DEALER_ID
             WHERE
                 td.COUNTRY_ID = :region_id
                 AND claims.STATUS = :status_id
-                AND files.FILE_TYPE_DETAIL = '.pdf'
                 AND claims.REPORT_DATE BETWEEN TO_DATE('2020-07-23', 'YYYY-MM-DD') 
                                             AND SYSDATE
                 AND claims.UPDATE_DATE < SYSDATE
-            ORDER BY claims.REPORT_DATE ASC, files.CREATE_DATE ASC
+            ORDER BY claims.REPORT_DATE ASC, claims.UPDATE_DATE ASC
         """
 
-        logger.info("🔎 Searching for new PDF files to download from DMS database...")
-        params = {
-            "region_id": region_id,
-            "status_id": status_id,
-        }
-
-        # Execute query on DMS database to get all potential files using raw cursor
-        dms_cursor.execute(dms_query, params)
-        dms_results = dms_cursor.fetchall()
-        
-        if not dms_results:
-            logger.info("✅ No files found in DMS database")
-            return pd.DataFrame()
-
-        # Convert results to DataFrame
-        columns = ['CLAIM_ID', 'CLAIM_NO', 'VIN', 'GROSS_CREDIT', 'REPORT_DATE', 'FILE_ID', 'FILE_NAME', 'CREATE_DATE']
-        df_all_files = pd.DataFrame(dms_results, columns=columns)
-        
-        logger.info(f"Found {len(df_all_files)} total files in DMS database")
-
-        # Now check against BGATE database in batches to avoid the 1000-item limit
-        file_ids = df_all_files["FILE_ID"].tolist()
-        downloaded_file_ids = []
-
-        # Process in batches of 999 to stay under Oracle's limit
-        batch_size = 999
-        for i in range(0, len(file_ids), batch_size):
-            batch_file_ids = file_ids[i : i + batch_size]
-
-            # Create placeholders for this batch
-            placeholders = ",".join([f":id{j}" for j in range(len(batch_file_ids))])
-
-            tracking_query = f"""
-                SELECT FILE_ID 
-                FROM PDF_DOWNLOAD_DMS_CLAIMS 
-                WHERE FILE_ID IN ({placeholders})
-                AND STATUS = 'SUCCESS'
-            """
-
-            # Create parameters dictionary for this batch
-            batch_params = {
-                f"id{j}": file_id for j, file_id in enumerate(batch_file_ids)
-            }
-
-            try:
-                # Execute tracking query on BGATE database for this batch using raw cursor
-                bgate_cursor.execute(tracking_query, batch_params)
-                batch_results = bgate_cursor.fetchall()
-                
-                if batch_results:
-                    batch_downloaded_file_ids = [row[0] for row in batch_results]
-                    downloaded_file_ids.extend(batch_downloaded_file_ids)
-
-                logger.info(
-                    f"Processed batch {i // batch_size + 1}/{(len(file_ids) + batch_size - 1) // batch_size}: "
-                    f"found {len(batch_results)} already downloaded files"
-                )
-
-            except Exception as batch_error:
-                logger.error(
-                    f"Error processing batch {i // batch_size + 1}: {batch_error}"
-                )
-                # Continue with next batch
-                continue
-
-        # Filter out already successfully downloaded files
-        df_filtered = df_all_files[~df_all_files["FILE_ID"].isin(downloaded_file_ids)]
-
-        logger.info(
-            f"✅ Found {len(df_all_files)} total files, {len(downloaded_file_ids)} already downloaded, {len(df_filtered)} new files to download"
+        # Get all claims from DMS
+        dms_df = pd.read_sql(
+            dms_query,
+            dms_connection,
+            params={
+                "region_id": region_id,
+                "status_id": status_id,
+            },
         )
 
-        if len(df_filtered) > 0:
-            # Log some statistics
-            date_range = df_filtered["REPORT_DATE"].agg(["min", "max"])
-            logger.info(f"Date range: {date_range['min']} to {date_range['max']}")
+        if dms_df.empty:
+            logger.info("✅ No claims found in DMS database")
+            return pd.DataFrame()
 
-        return df_filtered
+        logger.info(f"Found {len(dms_df)} claims in DMS database")
 
-    except oracledb.Error as error:
-        logger.error(f"❌ Error executing query to find new files: {error}")
-        return pd.DataFrame()
+        # Get existing claim statuses from BGATE
+        bgate_query = """
+            SELECT 
+                CLAIM_ID,
+                LAST_DMS_UPDATE_DATE,
+                ATTACHMENT_STATUS
+            FROM CLAIM_STATUS
+        """
+
+        bgate_df = pd.read_sql(bgate_query, bgate_connection)
+
+        # Merge to find claims needing updates
+        if not bgate_df.empty:
+            merged_df = dms_df.merge(bgate_df, on="CLAIM_ID", how="left")
+
+            # Claims need download if:
+            # 1. New claims (not in CLAIM_STATUS)
+            # 2. DMS UPDATE_DATE > stored LAST_DMS_UPDATE_DATE
+            # 3. Claims with ATTACHMENT_STATUS != 'COMPLETE'
+
+            needs_download = merged_df[
+                (merged_df["LAST_DMS_UPDATE_DATE"].isna())  # New claims
+                | (
+                    merged_df["UPDATE_DATE"] > merged_df["LAST_DMS_UPDATE_DATE"]
+                )  # Updated claims
+                | (merged_df["ATTACHMENT_STATUS"] != "COMPLETE")  # Incomplete downloads
+            ]
+        else:
+            # No existing claims, all are new
+            needs_download = dms_df
+
+        logger.info(f"✅ Found {len(needs_download)} claims needing download")
+
+        # Upsert claim status for all claims (update metadata)
+        for _, row in dms_df.iterrows():
+            claim_data = {
+                "claim_id": row["CLAIM_ID"],
+                "claim_no": row["CLAIM_NO"],
+                "vin": row["VIN"],
+                "dealer_code": row["DEALER_CODE"],
+                "dealer_name": row["DEALER_NAME"],
+                "report_date": row["REPORT_DATE"],
+                "gross_credit": row["GROSS_CREDIT"],
+                "labour_amount": row["LABOUR_AMOUNT"],
+                "part_amount": row["PART_AMOUNT"],
+                "last_dms_update": row["UPDATE_DATE"],
+                "auditing_date": row["AUDITING_DATE"],
+            }
+            upsert_claim_status(claim_data)
+
+        return needs_download
+
     except Exception as error:
-        logger.error(f"❌ Unexpected error in get_new_files_to_download: {error}")
+        logger.error(f"❌ Error getting claims needing download: {error}")
         return pd.DataFrame()
     finally:
-        # Close cursors and connections
-        if dms_cursor:
-            dms_cursor.close()
-        if bgate_cursor:
-            bgate_cursor.close()
         if dms_connection:
             dms_connection.close()
         if bgate_connection:
             bgate_connection.close()
+
+
+def get_new_files_to_download():
+    """
+    Gets PDF files for claims that need downloading.
+    """
+    dms_connection = None
+    bgate_connection = None
+
+    try:
+        # First, get claims that need downloading
+        claims_needing_download = get_claims_needing_download()
+
+        if claims_needing_download.empty:
+            logger.info("No claims need file downloads")
+            return pd.DataFrame()
+
+        claim_ids = claims_needing_download["CLAIM_ID"].tolist()
+        logger.info(f"Getting files for {len(claim_ids)} claims")
+
+        # Get connections
+        dms_connection = get_dms_db_connection()
+        bgate_connection = get_bgate_db_connection()
+
+        # Get region and status IDs
+        region_id = get_region_id(dms_connection)
+        status_id = get_status_code_id(dms_connection)
+
+        if not region_id or not status_id:
+            logger.error("Failed to get required region_id or status_id")
+            return pd.DataFrame()
+
+        # For each claim that needs downloading, mark old files as obsolete
+        for claim_id in claim_ids:
+            mark_old_files_obsolete(claim_id)
+
+        # Get PDF files for claims needing download, in batches
+        all_files = []
+        batch_size = 999  # Oracle IN clause limit
+
+        for i in range(0, len(claim_ids), batch_size):
+            batch_claim_ids = claim_ids[i : i + batch_size]
+            placeholders = ",".join([f":id{j}" for j in range(len(batch_claim_ids))])
+
+            files_query = f"""
+                SELECT
+                    claims.CLAIM_ID,
+                    claims.CLAIM_NO,
+                    claims.VIN,
+                    claims.GROSS_CREDIT,
+                    claims.REPORT_DATE,
+                    claims.LABOUR_AMOUNT,
+                    claims.PART_AMOUNT,
+                    claims.UPDATE_DATE,
+                    td.DEALER_CODE,
+                    td.DEALER_NAME,
+                    files.FILE_ID,
+                    files.FILE_NAME,
+                    files.CREATE_DATE
+                FROM
+                    DMS_OEM_PROD.SEC_TT_AS_WR_APPLICATION_V claims
+                JOIN
+                    DMS_OEM_PROD.TC_FILE_UPLOAD_INFO files ON claims.CLAIM_ID = files.BILL_ID
+                JOIN
+                    DMS_OEM_PROD.TM_DEALER td ON claims.DEALER_ID = td.DEALER_ID
+                WHERE
+                    claims.CLAIM_ID IN ({placeholders})
+                    AND files.FILE_TYPE_DETAIL = '.pdf'
+                ORDER BY claims.CLAIM_ID, files.CREATE_DATE ASC
+            """
+
+            params = {f"id{j}": claim_id for j, claim_id in enumerate(batch_claim_ids)}
+
+            cursor = dms_connection.cursor()
+            cursor.execute(files_query, params)
+            batch_results = cursor.fetchall()
+            cursor.close()
+
+            all_files.extend(batch_results)
+
+        if not all_files:
+            logger.info("No PDF files found for claims needing download")
+            return pd.DataFrame()
+
+        # Convert to DataFrame
+        columns = [
+            "CLAIM_ID",
+            "CLAIM_NO",
+            "VIN",
+            "GROSS_CREDIT",
+            "REPORT_DATE",
+            "LABOUR_AMOUNT",
+            "PART_AMOUNT",
+            "UPDATE_DATE",
+            "DEALER_CODE",
+            "DEALER_NAME",
+            "FILE_ID",
+            "FILE_NAME",
+            "CREATE_DATE",
+        ]
+        files_df = pd.DataFrame(all_files, columns=columns)  # type: ignore
+
+        # Update total file counts for each claim
+        file_counts = (
+            files_df.groupby("CLAIM_ID").size().reset_index(name="total_files")
+        )
+        for _, row in file_counts.iterrows():
+            update_claim_file_count(row["CLAIM_ID"], row["total_files"])
+
+        logger.info(
+            f"✅ Found {len(files_df)} PDF files to download for {len(claim_ids)} claims"
+        )
+
+        return files_df
+
+    except Exception as error:
+        logger.error(f"❌ Error getting new files to download: {error}")
+        return pd.DataFrame()
+    finally:
+        if dms_connection:
+            dms_connection.close()
+        if bgate_connection:
+            bgate_connection.close()
+
+
+def mark_old_files_obsolete(claim_id):
+    """
+    Mark existing PDF files for a claim as obsolete (IS_LATEST_VERSION = 'N')
+    when the claim has been updated in DMS.
+    """
+    connection = None
+    cursor = None
+
+    try:
+        connection = get_bgate_db_connection()
+        cursor = connection.cursor()
+
+        update_query = """
+            UPDATE PDF_DOWNLOAD_DMS_CLAIMS 
+            SET IS_LATEST_VERSION = 'N',
+                LAST_MODIFIED_DATE = CURRENT_TIMESTAMP
+            WHERE CLAIM_ID = :claim_id 
+            AND IS_LATEST_VERSION = 'Y'
+        """
+
+        cursor.execute(update_query, {"claim_id": claim_id})
+        updated_count = cursor.rowcount
+        connection.commit()
+
+        if updated_count > 0:
+            logger.info(
+                f"✅ Marked {updated_count} files as obsolete for CLAIM_ID {claim_id}"
+            )
+
+    except Exception as error:
+        logger.error(
+            f"❌ Error marking old files obsolete for CLAIM_ID {claim_id}: {error}"
+        )
+        if connection:
+            connection.rollback()
+        raise
+    finally:
+        if cursor:
+            cursor.close()
+        if connection:
+            connection.close()
+
+
+def update_claim_file_count(claim_id, total_files):
+    """Update the total file count for a claim"""
+    connection = None
+    cursor = None
+
+    try:
+        connection = get_bgate_db_connection()
+        cursor = connection.cursor()
+
+        update_query = """
+            UPDATE CLAIM_STATUS 
+            SET TOTAL_FILES_COUNT = :total_files,
+                LAST_MODIFIED_DATE = CURRENT_TIMESTAMP
+            WHERE CLAIM_ID = :claim_id
+        """
+
+        cursor.execute(update_query, {"total_files": total_files, "claim_id": claim_id})
+        connection.commit()
+
+        logger.debug(f"Updated file count for CLAIM_ID {claim_id}: {total_files} files")
+
+    except Exception as error:
+        logger.error(f"❌ Error updating file count for CLAIM_ID {claim_id}: {error}")
+        if connection:
+            connection.rollback()
+    finally:
+        if cursor:
+            cursor.close()
+        if connection:
+            connection.close()
+
+
+def update_attachment_status(claim_id):
+    """
+    Update the attachment status for a claim based on download progress.
+    Calculates status as PENDING/PARTIAL/COMPLETE based on successful downloads.
+    """
+    connection = None
+    cursor = None
+
+    try:
+        connection = get_bgate_db_connection()
+        cursor = connection.cursor()
+
+        # Get download statistics for this claim
+        stats_query = """
+            SELECT 
+                cs.TOTAL_FILES_COUNT,
+                COUNT(CASE WHEN pdf.STATUS = 'SUCCESS' AND pdf.IS_LATEST_VERSION = 'Y' THEN 1 END) AS SUCCESS_COUNT,
+                COUNT(CASE WHEN pdf.IS_LATEST_VERSION = 'Y' THEN 1 END) AS TOTAL_ATTEMPTED
+            FROM CLAIM_STATUS cs
+            LEFT JOIN PDF_DOWNLOAD_DMS_CLAIMS pdf ON cs.CLAIM_ID = pdf.CLAIM_ID
+            WHERE cs.CLAIM_ID = :claim_id
+            GROUP BY cs.TOTAL_FILES_COUNT
+        """
+
+        cursor.execute(stats_query, {"claim_id": claim_id})
+        result = cursor.fetchone()
+
+        if not result:
+            logger.warning(f"No claim found for CLAIM_ID {claim_id}")
+            return
+
+        total_files, success_count, total_attempted = result
+
+        # Determine attachment status
+        if success_count == 0:
+            attachment_status = "PENDING"
+        elif success_count == total_files:
+            attachment_status = "COMPLETE"
+        else:
+            attachment_status = "PARTIAL"
+
+        # Update the claim status
+        update_query = """
+            UPDATE CLAIM_STATUS 
+            SET ATTACHMENT_STATUS = :status,
+                DOWNLOADED_FILES_COUNT = :success_count,
+                LAST_MODIFIED_DATE = CURRENT_TIMESTAMP
+            WHERE CLAIM_ID = :claim_id
+        """
+
+        cursor.execute(
+            update_query,
+            {
+                "status": attachment_status,
+                "success_count": success_count,
+                "claim_id": claim_id,
+            },
+        )
+        connection.commit()
+
+        logger.info(
+            f"✅ Updated attachment status for CLAIM_ID {claim_id}: {attachment_status} ({success_count}/{total_files})"
+        )
+
+    except Exception as error:
+        logger.error(
+            f"❌ Error updating attachment status for CLAIM_ID {claim_id}: {error}"
+        )
+        if connection:
+            connection.rollback()
+    finally:
+        if cursor:
+            cursor.close()
+        if connection:
+            connection.close()
 
 
 def log_download_status(
@@ -357,7 +692,7 @@ def log_download_status(
 ):
     """
     Inserts or updates a record in the BGATE tracking table.
-    Enhanced with better error handling and logging.
+    Now includes claim last modified date and updates claim attachment status.
     """
     sql_merge = """
         MERGE INTO PDF_DOWNLOAD_DMS_CLAIMS dest
@@ -370,6 +705,7 @@ def log_download_status(
                 :local_path AS LOCAL_FILE_PATH,
                 :status AS STATUS,
                 :error_msg AS ERROR_MESSAGE,
+                :claim_last_modified AS CLAIM_LAST_MODIFIED,
                 CURRENT_TIMESTAMP AS DOWNLOAD_TIMESTAMP
             FROM DUAL
         ) src ON (dest.FILE_ID = src.FILE_ID)
@@ -378,6 +714,8 @@ def log_download_status(
                 dest.STATUS = src.STATUS,
                 dest.DOWNLOAD_TIMESTAMP = src.DOWNLOAD_TIMESTAMP,
                 dest.ERROR_MESSAGE = src.ERROR_MESSAGE,
+                dest.CLAIM_LAST_MODIFIED = src.CLAIM_LAST_MODIFIED,
+                dest.IS_LATEST_VERSION = 'Y',
                 dest.LOCAL_FILE_PATH = CASE 
                     WHEN src.STATUS = 'SUCCESS' THEN src.LOCAL_FILE_PATH 
                     ELSE dest.LOCAL_FILE_PATH 
@@ -385,11 +723,13 @@ def log_download_status(
         WHEN NOT MATCHED THEN
             INSERT (
                 FILE_ID, CLAIM_ID, CLAIM_NO, REMOTE_FILE_NAME, 
-                LOCAL_FILE_PATH, STATUS, ERROR_MESSAGE, DOWNLOAD_TIMESTAMP
+                LOCAL_FILE_PATH, STATUS, ERROR_MESSAGE, DOWNLOAD_TIMESTAMP,
+                CLAIM_LAST_MODIFIED, IS_LATEST_VERSION
             )
             VALUES (
                 src.FILE_ID, src.CLAIM_ID, src.CLAIM_NO, src.REMOTE_FILE_NAME, 
-                src.LOCAL_FILE_PATH, src.STATUS, src.ERROR_MESSAGE, src.DOWNLOAD_TIMESTAMP
+                src.LOCAL_FILE_PATH, src.STATUS, src.ERROR_MESSAGE, src.DOWNLOAD_TIMESTAMP,
+                src.CLAIM_LAST_MODIFIED, 'Y'
             )
     """
 
@@ -399,6 +739,9 @@ def log_download_status(
         # Connect to BGATE database for writing
         connection = get_bgate_db_connection()
         cursor = connection.cursor()
+
+        # Get the claim's last modified date from DMS
+        claim_last_modified = get_claim_last_modified_date(claim_id)
 
         # Truncate error message if too long
         truncated_error = None
@@ -417,11 +760,15 @@ def log_download_status(
                 "local_path": local_path if local_path != "N/A" else None,
                 "status": status,
                 "error_msg": truncated_error,
+                "claim_last_modified": claim_last_modified,
             },
         )
 
         connection.commit()
         logger.info(f"✅ Logged download status for FILE_ID {file_id}: {status}")
+
+        # Update the claim's attachment status after logging the file
+        update_attachment_status(claim_id)
 
     except oracledb.Error as error:
         logger.error(
@@ -451,6 +798,199 @@ def log_download_status(
             connection.close()
 
 
+def get_claim_last_modified_date(claim_id):
+    """Get the last modified date for a claim from CLAIM_STATUS table"""
+    connection = None
+    cursor = None
+
+    try:
+        connection = get_bgate_db_connection()
+        cursor = connection.cursor()
+
+        query = """
+            SELECT LAST_DMS_UPDATE_DATE 
+            FROM CLAIM_STATUS 
+            WHERE CLAIM_ID = :claim_id
+        """
+
+        cursor.execute(query, {"claim_id": claim_id})
+        result = cursor.fetchone()
+
+        if result:
+            return result[0]
+        else:
+            logger.warning(f"No claim status found for CLAIM_ID {claim_id}")
+            return None
+
+    except Exception as error:
+        logger.error(
+            f"Error getting claim last modified date for CLAIM_ID {claim_id}: {error}"
+        )
+        return None
+    finally:
+        if cursor:
+            cursor.close()
+        if connection:
+            connection.close()
+
+
+def get_claims_ready_for_processing():
+    """
+    Get claims that have ATTACHMENT_STATUS='COMPLETE' and AUDIT_STATUS='PENDING' or NULL.
+    These are claims ready for PDF processing.
+    """
+    connection = None
+
+    try:
+        connection = get_bgate_db_connection()
+
+        query = """
+            SELECT 
+                CLAIM_ID,
+                CLAIM_NO,
+                VIN,
+                DEALER_CODE,
+                DEALER_NAME,
+                GROSS_CREDIT,
+                LABOUR_AMOUNT_DMS,
+                PART_AMOUNT_DMS,
+                TOTAL_FILES_COUNT,
+                DOWNLOADED_FILES_COUNT
+            FROM CLAIM_STATUS
+            WHERE ATTACHMENT_STATUS = 'COMPLETE'
+            AND (AUDIT_STATUS IS NULL OR AUDIT_STATUS = 'PENDING')
+            ORDER BY LAST_DMS_UPDATE_DATE ASC
+        """
+
+        df = pd.read_sql(query, connection)
+
+        logger.info(f"Found {len(df)} claims ready for processing")
+        return df
+
+    except Exception as error:
+        logger.error(f"❌ Error getting claims ready for processing: {error}")
+        return pd.DataFrame()
+    finally:
+        if connection:
+            connection.close()
+
+
+def get_claim_pdf_files(claim_id):
+    """
+    Get all successfully downloaded PDF files for a specific claim.
+    Returns list of file paths.
+    """
+    connection = None
+
+    try:
+        connection = get_bgate_db_connection()
+
+        query = """
+            SELECT LOCAL_FILE_PATH
+            FROM PDF_DOWNLOAD_DMS_CLAIMS
+            WHERE CLAIM_ID = :claim_id
+            AND STATUS = 'SUCCESS'
+            AND IS_LATEST_VERSION = 'Y'
+            AND LOCAL_FILE_PATH IS NOT NULL
+            ORDER BY DOWNLOAD_TIMESTAMP
+        """
+
+        df = pd.read_sql(query, connection, params={"claim_id": claim_id})
+
+        file_paths = df["LOCAL_FILE_PATH"].tolist()
+        logger.debug(f"Found {len(file_paths)} PDF files for CLAIM_ID {claim_id}")
+
+        return file_paths
+
+    except Exception as error:
+        logger.error(f"❌ Error getting PDF files for CLAIM_ID {claim_id}: {error}")
+        return []
+    finally:
+        if connection:
+            connection.close()
+
+
+def update_audit_status(claim_id, audit_status):
+    """
+    Update the audit status for a claim.
+
+    Args:
+        claim_id: The claim ID
+        audit_status: 'PENDING', 'COMPLETE', or 'REJECTED'
+    """
+    connection = None
+    cursor = None
+
+    try:
+        connection = get_bgate_db_connection()
+        cursor = connection.cursor()
+
+        update_query = """
+            UPDATE CLAIM_STATUS 
+            SET AUDIT_STATUS = :audit_status,
+                LAST_MODIFIED_DATE = CURRENT_TIMESTAMP
+            WHERE CLAIM_ID = :claim_id
+        """
+
+        cursor.execute(
+            update_query, {"audit_status": audit_status, "claim_id": claim_id}
+        )
+        connection.commit()
+
+        logger.info(f"✅ Updated audit status for CLAIM_ID {claim_id}: {audit_status}")
+
+    except Exception as error:
+        logger.error(f"❌ Error updating audit status for CLAIM_ID {claim_id}: {error}")
+        if connection:
+            connection.rollback()
+        raise
+    finally:
+        if cursor:
+            cursor.close()
+        if connection:
+            connection.close()
+
+
+def get_claims_ready_for_audit():
+    """
+    Get claims that have been processed but need audit matching.
+    These are claims with AUDIT_STATUS='PENDING'.
+    """
+    connection = None
+
+    try:
+        connection = get_bgate_db_connection()
+
+        query = """
+            SELECT 
+                CLAIM_ID,
+                CLAIM_NO,
+                VIN,
+                DEALER_CODE,
+                DEALER_NAME,
+                GROSS_CREDIT,
+                LABOUR_AMOUNT_DMS,
+                PART_AMOUNT_DMS,
+                TOTAL_FILES_COUNT,
+                DOWNLOADED_FILES_COUNT
+            FROM CLAIM_STATUS
+            WHERE AUDIT_STATUS = 'PENDING'
+            ORDER BY LAST_DMS_UPDATE_DATE ASC
+        """
+
+        df = pd.read_sql(query, connection)
+
+        logger.info(f"Found {len(df)} claims ready for audit")
+        return df
+
+    except Exception as error:
+        logger.error(f"❌ Error getting claims ready for audit: {error}")
+        return pd.DataFrame()
+    finally:
+        if connection:
+            connection.close()
+
+
 def get_download_statistics():
     """Get download statistics for monitoring from BGATE database"""
     connection = None
@@ -464,19 +1004,20 @@ def get_download_statistics():
                 COUNT(*) AS COUNT,
                 ROUND(COUNT(*) * 100.0 / SUM(COUNT(*)) OVER(), 2) AS PERCENTAGE
             FROM PDF_DOWNLOAD_DMS_CLAIMS 
+            WHERE IS_LATEST_VERSION = 'Y'
             GROUP BY STATUS
             ORDER BY COUNT DESC
         """
 
         cursor.execute(query)
         results = cursor.fetchall()
-        
+
         if not results:
             return pd.DataFrame()
-            
+
         # Convert results to DataFrame
-        columns = ['STATUS', 'COUNT', 'PERCENTAGE']
-        df = pd.DataFrame(results, columns=columns)
+        columns = ["STATUS", "COUNT", "PERCENTAGE"]
+        df = pd.DataFrame(results, columns=columns)  # type: ignore
         return df
 
     except Exception as error:
@@ -503,7 +1044,8 @@ def get_recent_downloads(days=1):
                 REMOTE_FILE_NAME,
                 STATUS,
                 DOWNLOAD_TIMESTAMP,
-                ERROR_MESSAGE
+                ERROR_MESSAGE,
+                IS_LATEST_VERSION
             FROM PDF_DOWNLOAD_DMS_CLAIMS 
             WHERE DOWNLOAD_TIMESTAMP >= SYSDATE - :days
             ORDER BY DOWNLOAD_TIMESTAMP DESC
@@ -511,13 +1053,21 @@ def get_recent_downloads(days=1):
 
         cursor.execute(query, {"days": days})
         results = cursor.fetchall()
-        
+
         if not results:
             return pd.DataFrame()
-            
+
         # Convert results to DataFrame
-        columns = ['CLAIM_NO', 'FILE_ID', 'REMOTE_FILE_NAME', 'STATUS', 'DOWNLOAD_TIMESTAMP', 'ERROR_MESSAGE']
-        df = pd.DataFrame(results, columns=columns)
+        columns = [
+            "CLAIM_NO",
+            "FILE_ID",
+            "REMOTE_FILE_NAME",
+            "STATUS",
+            "DOWNLOAD_TIMESTAMP",
+            "ERROR_MESSAGE",
+            "IS_LATEST_VERSION",
+        ]
+        df = pd.DataFrame(results, columns=columns)  # type: ignore
         return df
 
     except Exception as error:
@@ -539,6 +1089,7 @@ def cleanup_old_failed_records(days=30):
         query = """
             DELETE FROM PDF_DOWNLOAD_DMS_CLAIMS 
             WHERE STATUS = 'FAILED' 
+            AND IS_LATEST_VERSION = 'N'
             AND DOWNLOAD_TIMESTAMP < SYSDATE - :days
         """
 
@@ -558,5 +1109,40 @@ def cleanup_old_failed_records(days=30):
     finally:
         if cursor:
             cursor.close()
+        if connection:
+            connection.close()
+
+
+def get_claim_statistics():
+    """Get claim-level statistics for monitoring"""
+    connection = None
+
+    try:
+        connection = get_bgate_db_connection()
+
+        query = """
+            SELECT 
+                ATTACHMENT_STATUS,
+                AUDIT_STATUS,
+                COUNT(*) AS COUNT
+            FROM CLAIM_STATUS
+            GROUP BY ATTACHMENT_STATUS, AUDIT_STATUS
+            ORDER BY ATTACHMENT_STATUS, AUDIT_STATUS
+        """
+
+        df = pd.read_sql(query, connection)
+
+        logger.info("📊 Claim Status Statistics:")
+        for _, row in df.iterrows():
+            logger.info(
+                f"   {row['ATTACHMENT_STATUS']} / {row['AUDIT_STATUS']}: {row['COUNT']} claims"
+            )
+
+        return df
+
+    except Exception as error:
+        logger.error(f"Error getting claim statistics: {error}")
+        return pd.DataFrame()
+    finally:
         if connection:
             connection.close()
