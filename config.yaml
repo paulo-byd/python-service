@@ -22,7 +22,7 @@ database:
   
   # Performance tuning
   batch_upsert_size: 500    # Number of claims to process per upsert batch
-  max_claims_per_cycle: 1000 # Maximum claims to process in one download cycle
+  max_claims_per_cycle: 10000 # Maximum claims to process in one download cycle
   file_query_batch_size: 500 # Number of claims per DMS file query batch
   
 # Scheduler settings
@@ -98,11 +98,12 @@ performance:
   # Batch processing settings
   batch_size: 20  # Process this many files before committing to DB
   
+  # Parallel download settings
+  parallel_downloads: true  # Enable multi-threaded downloads
+  max_workers: 8  # Number of concurrent download threads (recommend 4-12)
+  
   # Memory management
   max_memory_usage_mb: 1024
-  
-  parallel_downloads: false  # Set to true to enable parallel downloads
-  max_workers: 4  # Number of concurrent download threads (recommend 2-6)
   
   # Performance logging
   log_detailed_timing: true  # Log detailed timing for each download
