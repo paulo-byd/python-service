@@ -4,7 +4,7 @@
 download:
   base_url: "https://sadcsapi.bydauto.com/file/download?fileUrl="
   # storage_path: "/mnt/sdb/bgate/pdf-claims/"  # Production path
-  storage_path: "/home/pcampos/bgate/pdf-claims/"  # Paulo's local path
+  storage_path: "./pdf-claims/"  # Paulo's local path
   
   # Download behavior settings
   timeout_seconds: 60
@@ -13,6 +13,18 @@ download:
   delay_between_downloads: 1  # seconds between file downloads
   delay_between_claims: 2     # seconds between processing different claims
 
+# Database connection pool settings
+database:
+  # Connection pool configuration
+  min_connections: 2        # Minimum connections to maintain in pool
+  max_connections: 10       # Maximum connections in pool
+  pool_timeout_seconds: 30  # Time to wait for available connection
+  
+  # Performance tuning
+  batch_upsert_size: 500    # Number of claims to process per upsert batch
+  max_claims_per_cycle: 1000 # Maximum claims to process in one download cycle
+  file_query_batch_size: 500 # Number of claims per DMS file query batch
+  
 # Scheduler settings
 scheduler:
   # Run the check every 2 hours. 
