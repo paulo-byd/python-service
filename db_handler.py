@@ -28,7 +28,7 @@ def set_environment_mode(mode):
 
 
 def initialize_connection_pools(min_connections=2, max_connections=10):
-    """Initialize connection pools for both databases"""
+    """Initialize connection pools for BGATE database only (DMS uses direct connections)"""
     global _DMS_POOL, _BGATE_POOL
     
     logger.info(f"Starting pool initialization with environment mode: {_ENVIRONMENT_MODE}")
@@ -48,34 +48,11 @@ def initialize_connection_pools(min_connections=2, max_connections=10):
         logger.debug(f"DMS config: user={db_config['dms_db']['user']}, dsn={db_config['dms_db']['dsn']}")
         logger.debug(f"BGATE config: user={db_config['bgate_db']['user']}, dsn={db_config['bgate_db']['dsn']}")
         
-        # Initialize DMS pool
-        logger.info("Initializing DMS connection pool...")
-        try:
-            _DMS_POOL = oracledb.create_pool(
-                user=db_config["dms_db"]["user"],
-                password=db_config["dms_db"]["password"],
-                dsn=db_config["dms_db"]["dsn"],
-                min=min_connections,
-                max=max_connections,
-                increment=1,
-                getmode=oracledb.POOL_GETMODE_WAIT
-            )
-        except Exception as e:
-            if "getmode" in str(e):
-                logger.info("Falling back to basic pool parameters...")
-                _DMS_POOL = oracledb.create_pool(
-                    user=db_config["dms_db"]["user"],
-                    password=db_config["dms_db"]["password"],
-                    dsn=db_config["dms_db"]["dsn"],
-                    min=min_connections,
-                    max=max_connections,
-                    increment=1
-                )
-            else:
-                raise
-        logger.info(f"✅ DMS connection pool initialized (min={min_connections}, max={max_connections})")
+        # DMS will use direct connections (THICK mode only)
+        logger.info("DMS database will use direct connections (THICK mode)")
+        _DMS_POOL = None  # Explicitly set to None to force direct connections
         
-        # Initialize BGATE pool
+        # Initialize BGATE pool only
         logger.info("Initializing BGATE connection pool...")
         try:
             _BGATE_POOL = oracledb.create_pool(
@@ -102,11 +79,11 @@ def initialize_connection_pools(min_connections=2, max_connections=10):
                 raise
         logger.info(f"✅ BGATE connection pool initialized (min={min_connections}, max={max_connections})")
         
-        # Verify pools are accessible globally
-        if _DMS_POOL is None or _BGATE_POOL is None:
-            raise Exception("Pools were not properly assigned to global variables")
+        # Verify BGATE pool is accessible globally
+        if _BGATE_POOL is None:
+            raise Exception("BGATE pool was not properly assigned to global variable")
             
-        logger.info(f"✅ All connection pools initialized successfully")
+        logger.info(f"✅ Connection pools initialized successfully (DMS: direct, BGATE: pooled)")
         
     except Exception as error:
         logger.error(f"❌ Error initializing connection pools: {error}")
@@ -119,7 +96,7 @@ def get_pool_status():
     """Get current status of connection pools for debugging"""
     global _DMS_POOL, _BGATE_POOL
     
-    dms_status = "initialized" if _DMS_POOL is not None else "not initialized"
+    dms_status = "direct connections" if _DMS_POOL is None else "pooled"
     bgate_status = "initialized" if _BGATE_POOL is not None else "not initialized"
     
     logger.info(f"Pool Status - DMS: {dms_status}, BGATE: {bgate_status}, Environment: {_ENVIRONMENT_MODE}")
@@ -129,6 +106,8 @@ def get_pool_status():
             logger.info(f"DMS Pool - Open: {_DMS_POOL.opened}, Busy: {_DMS_POOL.busy}, Max: {_DMS_POOL.max}")
         except:
             logger.warning("Could not get DMS pool statistics")
+    else:
+        logger.info("DMS using direct connections (THICK mode)")
             
     if _BGATE_POOL:
         try:
@@ -142,10 +121,13 @@ def close_connection_pools():
     global _DMS_POOL, _BGATE_POOL
     
     try:
+        # DMS uses direct connections, no pool to close
         if _DMS_POOL:
             _DMS_POOL.close()
             _DMS_POOL = None
             logger.info("✅ DMS connection pool closed")
+        else:
+            logger.info("DMS using direct connections - no pool to close")
             
         if _BGATE_POOL:
             _BGATE_POOL.close()
@@ -159,15 +141,16 @@ def close_connection_pools():
 class DatabaseConnection:
     """Context manager for database connections that properly returns connections to pool"""
     
-    def __init__(self, pool_type='bgate'):
+    def __init__(self, pool_type='bgate', retry_count=3):
         self.pool_type = pool_type
         self.connection = None
         self.from_pool = False
+        self.retry_count = retry_count
         
     def __enter__(self):
         if self.pool_type == 'dms':
-            self.connection = get_dms_db_connection()
-            self.from_pool = _DMS_POOL is not None
+            self.connection = get_dms_db_connection(retry_count=self.retry_count)
+            self.from_pool = False  # DMS always uses direct connections
         else:  # bgate
             self.connection = get_bgate_db_connection()
             self.from_pool = _BGATE_POOL is not None
@@ -175,14 +158,47 @@ class DatabaseConnection:
         
     def __exit__(self, exc_type, exc_val, exc_tb):
         if self.connection:
-            if self.from_pool:
-                # Return to pool
+            try:
+                if self.from_pool:
+                    # Return to pool
+                    self.connection.close()
+                    logger.debug(f"{self.pool_type.upper()} connection returned to pool")
+                else:
+                    # Direct connection, close normally
+                    self.connection.close()
+                    logger.debug(f"{self.pool_type.upper()} direct connection closed")
+            except Exception as close_error:
+                logger.warning(f"Error closing {self.pool_type.upper()} connection: {close_error}")
+
+
+class DMSConnection:
+    """Specialized context manager for DMS connections with enhanced error handling"""
+    
+    def __init__(self, retry_count=3, operation_name="DMS operation"):
+        self.retry_count = retry_count
+        self.operation_name = operation_name
+        self.connection = None
+        
+    def __enter__(self):
+        self.connection = get_dms_db_connection(retry_count=self.retry_count)
+        return self.connection
+        
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self.connection:
+            try:
                 self.connection.close()
-                logger.debug(f"{self.pool_type.upper()} connection returned to pool")
-            else:
-                # Direct connection, close normally
-                self.connection.close()
-                logger.debug(f"{self.pool_type.upper()} direct connection closed")
+                logger.debug(f"DMS connection closed for {self.operation_name}")
+            except Exception as close_error:
+                logger.warning(f"Error closing DMS connection for {self.operation_name}: {close_error}")
+        
+        # Handle specific Oracle errors
+        if exc_type and issubclass(exc_type, Exception):
+            if "ORA-03113" in str(exc_val) or "ORA-03135" in str(exc_val):
+                logger.error(f"DMS connection lost during {self.operation_name}: {exc_val}")
+                # Don't suppress the exception, let it bubble up for retry at higher level
+                return False
+        
+        return False  # Don't suppress exceptions
 
 
 # Environment-specific database configurations
@@ -249,14 +265,14 @@ def load_config():
         raise
 
 
-def get_dms_db_connection():
-    """Gets a connection from the DMS database pool (for reading) using Oracle DB THICK mode."""
+def get_dms_db_connection(retry_count=3, retry_delay=2):
+    """Gets a direct connection to the DMS database (for reading) using Oracle DB THICK mode with retry logic."""
     global _DMS_POOL
     
-    if _DMS_POOL is None:
-        # Fallback to direct connection if pool not initialized
-        logger.warning("DMS pool not initialized, creating direct connection")
-        db_config = get_current_config()["dms_db"]
+    db_config = get_current_config()["dms_db"]
+    last_error = None
+    
+    for attempt in range(retry_count):
         try:
             connection = oracledb.connect(
                 user=db_config["user"],
@@ -264,19 +280,31 @@ def get_dms_db_connection():
                 dsn=db_config["dsn"],
                 mode=oracledb.DEFAULT_AUTH,
             )
-            logger.info("DMS Database connection established (THICK mode - direct)")
+            
+            # Test the connection immediately
+            cursor = connection.cursor()
+            cursor.execute("SELECT 1 FROM DUAL")
+            cursor.fetchone()
+            cursor.close()
+            
+            if attempt > 0:
+                logger.info(f"DMS Database connection established (THICK mode - attempt {attempt + 1})")
+            else:
+                logger.debug("DMS Database connection established (THICK mode - direct)")
             return connection
+            
         except oracledb.Error as error:
-            logger.error(f"Error connecting to DMS Oracle Database (THICK mode): {error}")
-            raise
+            last_error = error
+            if attempt < retry_count - 1:
+                logger.warning(f"DMS connection attempt {attempt + 1} failed: {error}. Retrying in {retry_delay} seconds...")
+                import time
+                time.sleep(retry_delay)
+                retry_delay *= 2  # Exponential backoff
+            else:
+                logger.error(f"All {retry_count} DMS connection attempts failed. Last error: {error}")
     
-    try:
-        connection = _DMS_POOL.acquire()
-        logger.debug("DMS Database connection acquired from pool")
-        return connection
-    except oracledb.Error as error:
-        logger.error(f"Error acquiring DMS connection from pool: {error}")
-        raise
+    # If we get here, all attempts failed
+    raise last_error
 
 
 def get_bgate_db_connection():
@@ -392,6 +420,78 @@ def get_status_code_id(connection, type_code=5618, target_description="待审核
         return None
 
 
+def get_dms_region_and_status_ids():
+    """
+    Helper function to get region and status IDs with lazy DMS connection.
+    Returns tuple (region_id, status_id) or (None, None) on failure.
+    """
+    try:
+        with DMSConnection(operation_name="get_region_status_ids") as dms_connection:
+            region_id = get_region_id(dms_connection)
+            status_id = get_status_code_id(dms_connection)
+            return region_id, status_id
+    except Exception as error:
+        logger.error(f"❌ Error getting DMS region and status IDs: {error}")
+        return None, None
+
+
+def should_skip_dms_operations():
+    """
+    Check if we can skip DMS operations by examining local state first.
+    Returns True if we can skip, False if we need to proceed.
+    """
+    try:
+        with DatabaseConnection('bgate') as bgate_connection:
+            # Check if we have any claims that might need processing
+            check_query = """
+                SELECT COUNT(*) 
+                FROM CLAIM_STATUS 
+                WHERE ATTACHMENT_STATUS != 'COMPLETE' 
+                OR AUDIT_STATUS IS NULL 
+                OR AUDIT_STATUS = 'PENDING'
+            """
+            cursor = bgate_connection.cursor()
+            cursor.execute(check_query)
+            pending_count = cursor.fetchone()[0]
+            cursor.close()
+            
+            if pending_count == 0:
+                logger.info("No pending claims found, skipping DMS operations")
+                return True
+                
+            logger.debug(f"Found {pending_count} claims that may need DMS data")
+            return False
+            
+    except Exception as error:
+        logger.warning(f"Could not check local state, proceeding with DMS operations: {error}")
+        return False
+
+def convert_pandas_types_for_oracle(data):
+    """
+    Convert pandas/numpy data types to Python native types for Oracle compatibility.
+    
+    Args:
+        data (dict): Dictionary with potentially numpy/pandas typed values
+        
+    Returns:
+        dict: Dictionary with Oracle-compatible Python native types
+    """
+    safe_data = {}
+    for key, value in data.items():
+        if pd.isna(value):
+            safe_data[key] = None
+        elif hasattr(value, 'dtype'):  # numpy types
+            if 'int' in str(value.dtype):
+                safe_data[key] = int(value)
+            elif 'float' in str(value.dtype):
+                safe_data[key] = float(value)
+            else:
+                safe_data[key] = value.item() if hasattr(value, 'item') else str(value)
+        else:
+            safe_data[key] = value
+    return safe_data
+
+
 def upsert_claim_status(claim_data):
     """
     Update or insert claim status in CLAIM_STATUS table.
@@ -435,6 +535,28 @@ def upsert_claim_status(claim_data):
                         dest.LAST_DMS_UPDATE_DATE = src.LAST_DMS_UPDATE_DATE,
                         dest.AUDITING_DATE = src.AUDITING_DATE,
                         dest.LAST_MODIFIED_DATE = CURRENT_TIMESTAMP
+                    WHERE (
+                        dest.CLAIM_NO != src.CLAIM_NO OR
+                        dest.VIN != src.VIN OR
+                        dest.DEALER_CODE != src.DEALER_CODE OR
+                        dest.DEALER_NAME != src.DEALER_NAME OR
+                        dest.REPORT_DATE != src.REPORT_DATE OR
+                        dest.GROSS_CREDIT != src.GROSS_CREDIT OR
+                        dest.LABOUR_AMOUNT_DMS != src.LABOUR_AMOUNT_DMS OR
+                        dest.PART_AMOUNT_DMS != src.PART_AMOUNT_DMS OR
+                        dest.LAST_DMS_UPDATE_DATE != src.LAST_DMS_UPDATE_DATE OR
+                        dest.AUDITING_DATE != src.AUDITING_DATE OR
+                        (dest.CLAIM_NO IS NULL AND src.CLAIM_NO IS NOT NULL) OR
+                        (dest.VIN IS NULL AND src.VIN IS NOT NULL) OR
+                        (dest.DEALER_CODE IS NULL AND src.DEALER_CODE IS NOT NULL) OR
+                        (dest.DEALER_NAME IS NULL AND src.DEALER_NAME IS NOT NULL) OR
+                        (dest.REPORT_DATE IS NULL AND src.REPORT_DATE IS NOT NULL) OR
+                        (dest.GROSS_CREDIT IS NULL AND src.GROSS_CREDIT IS NOT NULL) OR
+                        (dest.LABOUR_AMOUNT_DMS IS NULL AND src.LABOUR_AMOUNT_DMS IS NOT NULL) OR
+                        (dest.PART_AMOUNT_DMS IS NULL AND src.PART_AMOUNT_DMS IS NOT NULL) OR
+                        (dest.LAST_DMS_UPDATE_DATE IS NULL AND src.LAST_DMS_UPDATE_DATE IS NOT NULL) OR
+                        (dest.AUDITING_DATE IS NULL AND src.AUDITING_DATE IS NOT NULL)
+                    )
                 WHEN NOT MATCHED THEN
                     INSERT (
                         CLAIM_ID, CLAIM_NO, VIN, DEALER_CODE, DEALER_NAME, REPORT_DATE,
@@ -448,11 +570,18 @@ def upsert_claim_status(claim_data):
                     )
             """
 
-            cursor.execute(merge_query, claim_data)
+            # Convert pandas/numpy types to Oracle-compatible Python types
+            safe_claim_data = convert_pandas_types_for_oracle(claim_data)
+            
+            cursor.execute(merge_query, safe_claim_data)
+            rows_affected = cursor.rowcount
             connection.commit()
             cursor.close()
 
-            logger.info(f"✅ Upserted claim status for CLAIM_ID {claim_data['claim_id']}")
+            if rows_affected > 0:
+                logger.info(f"✅ Updated claim status for CLAIM_ID {safe_claim_data['claim_id']} ({rows_affected} rows affected)")
+            else:
+                logger.debug(f"📋 No changes needed for CLAIM_ID {safe_claim_data['claim_id']} (data unchanged)")
 
     except Exception as error:
         logger.error(
@@ -461,80 +590,209 @@ def upsert_claim_status(claim_data):
         raise
 
 
+def batch_upsert_claim_status(claims_df, batch_size=500):
+    """
+    High-performance batch upsert for claim status data.
+    Processes DataFrame in chunks for optimal performance.
+    
+    Args:
+        claims_df (pd.DataFrame): DataFrame containing claim data
+        batch_size (int): Number of records to process per batch
+    """
+    if claims_df.empty:
+        logger.info("No claims to upsert")
+        return
+    
+    total_claims = len(claims_df)
+    total_batches = (total_claims + batch_size - 1) // batch_size
+    processed_count = 0
+    
+    logger.info(f"Starting batch upsert of {total_claims} claims in {total_batches} batches of {batch_size}")
+    
+    for batch_num in range(total_batches):
+        start_idx = batch_num * batch_size
+        end_idx = min(start_idx + batch_size, total_claims)
+        batch_df = claims_df.iloc[start_idx:end_idx]
+        
+        try:
+            with DatabaseConnection('bgate') as connection:
+                cursor = connection.cursor()
+                
+                # Prepare batch data with proper type conversion
+                batch_data = []
+                for _, row in batch_df.iterrows():
+                    raw_claim_data = {
+                        "claim_id": row["CLAIM_ID"],
+                        "claim_no": row["CLAIM_NO"],
+                        "vin": row["VIN"],
+                        "dealer_code": row["DEALER_CODE"],
+                        "dealer_name": row["DEALER_NAME"],
+                        "report_date": row["REPORT_DATE"],
+                        "gross_credit": row["GROSS_CREDIT"],
+                        "labour_amount": row["LABOUR_AMOUNT"],
+                        "part_amount": row["PART_AMOUNT"],
+                        "last_dms_update": row["UPDATE_DATE"],
+                        "auditing_date": row["AUDITING_DATE"],
+                    }
+                    # Convert pandas/numpy types to Oracle-compatible types
+                    claim_data = convert_pandas_types_for_oracle(raw_claim_data)
+                    batch_data.append(claim_data)
+                
+                # Execute batch merge using executemany for better performance
+                merge_query = """
+                    MERGE INTO CLAIM_STATUS dest
+                    USING (
+                        SELECT 
+                            :claim_id AS CLAIM_ID,
+                            :claim_no AS CLAIM_NO,
+                            :vin AS VIN,
+                            :dealer_code AS DEALER_CODE,
+                            :dealer_name AS DEALER_NAME,
+                            :report_date AS REPORT_DATE,
+                            :gross_credit AS GROSS_CREDIT,
+                            :labour_amount AS LABOUR_AMOUNT_DMS,
+                            :part_amount AS PART_AMOUNT_DMS,
+                            :last_dms_update AS LAST_DMS_UPDATE_DATE,
+                            :auditing_date AS AUDITING_DATE
+                        FROM DUAL
+                    ) src ON (dest.CLAIM_ID = src.CLAIM_ID)
+                    WHEN MATCHED THEN
+                        UPDATE SET
+                            dest.CLAIM_NO = src.CLAIM_NO,
+                            dest.VIN = src.VIN,
+                            dest.DEALER_CODE = src.DEALER_CODE,
+                            dest.DEALER_NAME = src.DEALER_NAME,
+                            dest.REPORT_DATE = src.REPORT_DATE,
+                            dest.GROSS_CREDIT = src.GROSS_CREDIT,
+                            dest.LABOUR_AMOUNT_DMS = src.LABOUR_AMOUNT_DMS,
+                            dest.PART_AMOUNT_DMS = src.PART_AMOUNT_DMS,
+                            dest.LAST_DMS_UPDATE_DATE = src.LAST_DMS_UPDATE_DATE,
+                            dest.AUDITING_DATE = src.AUDITING_DATE,
+                            dest.LAST_MODIFIED_DATE = CURRENT_TIMESTAMP
+                        WHERE (
+                            dest.CLAIM_NO != src.CLAIM_NO OR
+                            dest.VIN != src.VIN OR
+                            dest.DEALER_CODE != src.DEALER_CODE OR
+                            dest.DEALER_NAME != src.DEALER_NAME OR
+                            dest.REPORT_DATE != src.REPORT_DATE OR
+                            dest.GROSS_CREDIT != src.GROSS_CREDIT OR
+                            dest.LABOUR_AMOUNT_DMS != src.LABOUR_AMOUNT_DMS OR
+                            dest.PART_AMOUNT_DMS != src.PART_AMOUNT_DMS OR
+                            dest.LAST_DMS_UPDATE_DATE != src.LAST_DMS_UPDATE_DATE OR
+                            dest.AUDITING_DATE != src.AUDITING_DATE OR
+                            (dest.CLAIM_NO IS NULL AND src.CLAIM_NO IS NOT NULL) OR
+                            (dest.VIN IS NULL AND src.VIN IS NOT NULL) OR
+                            (dest.DEALER_CODE IS NULL AND src.DEALER_CODE IS NOT NULL) OR
+                            (dest.DEALER_NAME IS NULL AND src.DEALER_NAME IS NOT NULL) OR
+                            (dest.REPORT_DATE IS NULL AND src.REPORT_DATE IS NOT NULL) OR
+                            (dest.GROSS_CREDIT IS NULL AND src.GROSS_CREDIT IS NOT NULL) OR
+                            (dest.LABOUR_AMOUNT_DMS IS NULL AND src.LABOUR_AMOUNT_DMS IS NOT NULL) OR
+                            (dest.PART_AMOUNT_DMS IS NULL AND src.PART_AMOUNT_DMS IS NOT NULL) OR
+                            (dest.LAST_DMS_UPDATE_DATE IS NULL AND src.LAST_DMS_UPDATE_DATE IS NOT NULL) OR
+                            (dest.AUDITING_DATE IS NULL AND src.AUDITING_DATE IS NOT NULL)
+                        )
+                    WHEN NOT MATCHED THEN
+                        INSERT (
+                            CLAIM_ID, CLAIM_NO, VIN, DEALER_CODE, DEALER_NAME, REPORT_DATE,
+                            GROSS_CREDIT, LABOUR_AMOUNT_DMS, PART_AMOUNT_DMS, 
+                            LAST_DMS_UPDATE_DATE, AUDITING_DATE, ATTACHMENT_STATUS
+                        )
+                        VALUES (
+                            src.CLAIM_ID, src.CLAIM_NO, src.VIN, src.DEALER_CODE, src.DEALER_NAME, src.REPORT_DATE,
+                            src.GROSS_CREDIT, src.LABOUR_AMOUNT_DMS, src.PART_AMOUNT_DMS,
+                            src.LAST_DMS_UPDATE_DATE, src.AUDITING_DATE, 'PENDING'
+                        )
+                """
+                
+                cursor.executemany(merge_query, batch_data)
+                rows_affected = cursor.rowcount
+                connection.commit()
+                cursor.close()
+                
+                processed_count += len(batch_data)
+                progress_percent = (processed_count / total_claims) * 100
+                
+                logger.info(f"✅ Batch {batch_num + 1}/{total_batches}: {len(batch_data)} claims processed ({rows_affected} rows affected) - {progress_percent:.1f}% complete")
+                
+        except Exception as error:
+            logger.error(f"❌ Error in batch {batch_num + 1}: {error}")
+            # Continue with next batch instead of failing entirely
+            continue
+    
+    logger.info(f"✅ Batch upsert completed: {processed_count}/{total_claims} claims processed")
+
+
 def get_claims_needing_download():
     """
     Get claims that need files downloaded by comparing DMS UPDATE_DATE with stored LAST_DMS_UPDATE_DATE.
     Returns DataFrame with claims that are new or have been updated in DMS.
+    Uses lazy DMS connection instantiation.
     """
-    dms_connection = None
-    bgate_connection = None
-
     try:
-        # Get connections
-        dms_connection = get_dms_db_connection()
-        bgate_connection = get_bgate_db_connection()
+        # First get BGATE data to see if we even need to query DMS
+        with DatabaseConnection('bgate') as bgate_connection:
+            bgate_query = """
+                SELECT 
+                    CLAIM_ID,
+                    LAST_DMS_UPDATE_DATE,
+                    ATTACHMENT_STATUS
+                FROM CLAIM_STATUS
+            """
+            bgate_df = pd.read_sql(bgate_query, bgate_connection)
 
-        # Get region and status IDs
-        region_id = get_region_id(dms_connection)
-        status_id = get_status_code_id(dms_connection)
-
+        # Get region and status IDs with lazy DMS connection
+        region_id, status_id = get_dms_region_and_status_ids()
+        
         if not region_id or not status_id:
             logger.error("Failed to get required region_id or status_id")
             return pd.DataFrame()
 
-        # Updated DMS query with new fields
-        dms_query = """
-            SELECT
-                claims.CLAIM_ID,
-                claims.CLAIM_NO,
-                claims.VIN,
-                claims.GROSS_CREDIT,
-                claims.REPORT_DATE,
-                claims.LABOUR_AMOUNT,
-                claims.PART_AMOUNT,
-                claims.AUDITING_DATE,
-                claims.UPDATE_DATE,
-                td.DEALER_CODE,
-                td.DEALER_NAME
-            FROM
-                DMS_OEM_PROD.SEC_TT_AS_WR_APPLICATION_V claims
-            JOIN
-                DMS_OEM_PROD.TM_DEALER td ON claims.DEALER_ID = td.DEALER_ID
-            WHERE
-                td.COUNTRY_ID = :region_id
-                AND claims.STATUS = :status_id
-                AND claims.REPORT_DATE BETWEEN TO_DATE('2020-07-23', 'YYYY-MM-DD') 
-                                            AND SYSDATE
-                AND claims.UPDATE_DATE < SYSDATE
-            ORDER BY claims.REPORT_DATE ASC, claims.UPDATE_DATE ASC
-        """
+        # Now create DMS connection only for the main query
+        with DMSConnection(operation_name="get_claims_data") as dms_connection:
+            # Updated DMS query with new fields
+            dms_query = """
+                SELECT
+                    claims.CLAIM_ID,
+                    claims.CLAIM_NO,
+                    claims.VIN,
+                    claims.GROSS_CREDIT,
+                    claims.REPORT_DATE,
+                    claims.LABOUR_AMOUNT,
+                    claims.PART_AMOUNT,
+                    claims.AUDITING_DATE,
+                    claims.UPDATE_DATE,
+                    td.DEALER_CODE,
+                    td.DEALER_NAME
+                FROM
+                    DMS_OEM_PROD.SEC_TT_AS_WR_APPLICATION_V claims
+                JOIN
+                    DMS_OEM_PROD.TM_DEALER td ON claims.DEALER_ID = td.DEALER_ID
+                WHERE
+                    td.COUNTRY_ID = :region_id
+                    AND claims.STATUS = :status_id
+                    AND claims.REPORT_DATE BETWEEN TO_DATE('2020-07-23', 'YYYY-MM-DD') 
+                                                AND SYSDATE
+                    AND claims.UPDATE_DATE < SYSDATE
+                ORDER BY claims.REPORT_DATE ASC, claims.UPDATE_DATE ASC
+            """
 
-        # Get all claims from DMS
-        dms_df = pd.read_sql(
-            dms_query,
-            dms_connection,
-            params={
-                "region_id": region_id,
-                "status_id": status_id,
-            },
-        )
+            # Get all claims from DMS
+            dms_df = pd.read_sql(
+                dms_query,
+                dms_connection,
+                params={
+                    "region_id": region_id,
+                    "status_id": status_id,
+                },
+            )
+
+        # DMS connection automatically closed here
 
         if dms_df.empty:
             logger.info("✅ No claims found in DMS database")
             return pd.DataFrame()
 
         logger.info(f"Found {len(dms_df)} claims in DMS database")
-
-        # Get existing claim statuses from BGATE
-        bgate_query = """
-            SELECT 
-                CLAIM_ID,
-                LAST_DMS_UPDATE_DATE,
-                ATTACHMENT_STATUS
-            FROM CLAIM_STATUS
-        """
-
-        bgate_df = pd.read_sql(bgate_query, bgate_connection)
 
         # Merge to find claims needing updates
         if not bgate_df.empty:
@@ -558,75 +816,97 @@ def get_claims_needing_download():
 
         logger.info(f"✅ Found {len(needs_download)} claims needing download")
 
-        # Upsert claim status for all claims (update metadata)
-        for _, row in dms_df.iterrows():
-            claim_data = {
-                "claim_id": row["CLAIM_ID"],
-                "claim_no": row["CLAIM_NO"],
-                "vin": row["VIN"],
-                "dealer_code": row["DEALER_CODE"],
-                "dealer_name": row["DEALER_NAME"],
-                "report_date": row["REPORT_DATE"],
-                "gross_credit": row["GROSS_CREDIT"],
-                "labour_amount": row["LABOUR_AMOUNT"],
-                "part_amount": row["PART_AMOUNT"],
-                "last_dms_update": row["UPDATE_DATE"],
-                "auditing_date": row["AUDITING_DATE"],
-            }
-            upsert_claim_status(claim_data)
+        # Batch upsert claim status for all claims (update metadata)
+        if not dms_df.empty:
+            config = load_config()
+            batch_size = config.get("database", {}).get("batch_upsert_size", 500)
+            logger.info(f"Batch upserting {len(dms_df)} claims...")
+            batch_upsert_claim_status(dms_df, batch_size=batch_size)
+            logger.info(f"✅ Batch upsert completed")
+
+        logger.info(f"Returning {len(needs_download)} downloadable claims from {len(dms_df)} total claims")
 
         return needs_download
 
     except Exception as error:
         logger.error(f"❌ Error getting claims needing download: {error}")
         return pd.DataFrame()
-    finally:
-        if dms_connection:
-            dms_connection.close()
-        if bgate_connection:
-            bgate_connection.close()
 
 
-def get_new_files_to_download():
+def get_new_files_to_download(max_claims=1000):
     """
-    Gets PDF files for claims that need downloading.
+    Gets PDF files for claims that need downloading with robust connection handling and early filtering.
+    
+    Args:
+        max_claims (int): Maximum number of claims to process in one batch (performance limit)
     """
-    dms_connection = None
-    bgate_connection = None
+    max_retries = 2
+    
+    for attempt in range(max_retries):
+        try:
+            return _get_new_files_to_download_impl(max_claims)
+        except Exception as error:
+            if attempt < max_retries - 1 and ("ORA-03113" in str(error) or "ORA-03135" in str(error)):
+                logger.warning(f"DMS connection failed on attempt {attempt + 1}, retrying: {error}")
+                import time
+                time.sleep(3)  # Wait before retry
+                continue
+            else:
+                logger.error(f"❌ Error getting new files to download (attempt {attempt + 1}): {error}")
+                return pd.DataFrame()
+    
+    return pd.DataFrame()
 
+
+def _get_new_files_to_download_impl(max_claims=None):
+    """
+    Internal implementation of get_new_files_to_download with robust connection handling and performance optimization.
+    """
     try:
-        # First, get claims that need downloading
+        # Load config for performance settings
+        config = load_config()
+        if max_claims is None:
+            max_claims = config.get("database", {}).get("max_claims_per_cycle", 1000)
+        batch_size = config.get("database", {}).get("file_query_batch_size", 500)
+        
+        # First, get claims that need downloading with early filtering
         claims_needing_download = get_claims_needing_download()
 
         if claims_needing_download.empty:
             logger.info("No claims need file downloads")
             return pd.DataFrame()
 
+        # Limit the number of claims processed in one batch for performance
+        if len(claims_needing_download) > max_claims:
+            logger.info(f"Limiting processing to {max_claims} claims out of {len(claims_needing_download)} total (configured limit)")
+            # Sort by priority (most recent updates first)
+            claims_needing_download = claims_needing_download.sort_values('UPDATE_DATE', ascending=False).head(max_claims)
+
         claim_ids = claims_needing_download["CLAIM_ID"].tolist()
         logger.info(f"Getting files for {len(claim_ids)} claims")
 
-        # Get connections
-        dms_connection = get_dms_db_connection()
-        bgate_connection = get_bgate_db_connection()
-
-        # Get region and status IDs
-        region_id = get_region_id(dms_connection)
-        status_id = get_status_code_id(dms_connection)
-
+        # Get region and status IDs with lazy DMS connection
+        region_id, status_id = get_dms_region_and_status_ids()
+        
         if not region_id or not status_id:
             logger.error("Failed to get required region_id or status_id")
             return pd.DataFrame()
 
         # For each claim that needs downloading, mark old files as obsolete
+        logger.info("Marking old files as obsolete...")
         for claim_id in claim_ids:
             mark_old_files_obsolete(claim_id)
 
-        # Get PDF files for claims needing download, in batches
+        # Get PDF files for claims needing download, in smaller batches for better performance
         all_files = []
-        batch_size = 999  # Oracle IN clause limit
+        total_batches = (len(claim_ids) + batch_size - 1) // batch_size
+
+        logger.info(f"Processing {len(claim_ids)} claims in {total_batches} batches of {batch_size} (configured size)")
 
         for i in range(0, len(claim_ids), batch_size):
             batch_claim_ids = claim_ids[i : i + batch_size]
+            batch_num = (i // batch_size) + 1
+            
             placeholders = ",".join([f":id{j}" for j in range(len(batch_claim_ids))])
 
             files_query = f"""
@@ -658,12 +938,15 @@ def get_new_files_to_download():
 
             params = {f"id{j}": claim_id for j, claim_id in enumerate(batch_claim_ids)}
 
-            cursor = dms_connection.cursor()
-            cursor.execute(files_query, params)
-            batch_results = cursor.fetchall()
-            cursor.close()
+            # Use fresh DMS connection for each batch to avoid timeout issues
+            with DMSConnection(operation_name=f"get_files_batch_{batch_num}") as dms_connection:
+                cursor = dms_connection.cursor()
+                cursor.execute(files_query, params)
+                batch_results = cursor.fetchall()
+                cursor.close()
 
             all_files.extend(batch_results)
+            logger.info(f"✅ Batch {batch_num}/{total_batches}: Found {len(batch_results)} files for {len(batch_claim_ids)} claims")
 
         if not all_files:
             logger.info("No PDF files found for claims needing download")
@@ -687,12 +970,14 @@ def get_new_files_to_download():
         ]
         files_df = pd.DataFrame(all_files, columns=columns)  # type: ignore
 
-        # Update total file counts for each claim
+        # Update total file counts for each claim in batches
+        logger.info("Updating file counts...")
         file_counts = (
             files_df.groupby("CLAIM_ID").size().reset_index(name="total_files")
         )
-        for _, row in file_counts.iterrows():
-            update_claim_file_count(row["CLAIM_ID"], row["total_files"])
+        
+        # Batch update file counts for better performance
+        batch_update_file_counts(file_counts)
 
         logger.info(
             f"✅ Found {len(files_df)} PDF files to download for {len(claim_ids)} claims"
@@ -701,13 +986,61 @@ def get_new_files_to_download():
         return files_df
 
     except Exception as error:
-        logger.error(f"❌ Error getting new files to download: {error}")
-        return pd.DataFrame()
-    finally:
-        if dms_connection:
-            dms_connection.close()
-        if bgate_connection:
-            bgate_connection.close()
+        logger.error(f"❌ Error in _get_new_files_to_download_impl: {error}")
+        raise
+
+
+def batch_update_file_counts(file_counts_df, batch_size=100):
+    """
+    Batch update file counts for better performance.
+    
+    Args:
+        file_counts_df (pd.DataFrame): DataFrame with CLAIM_ID and total_files columns
+        batch_size (int): Number of updates per batch
+    """
+    if file_counts_df.empty:
+        return
+        
+    total_updates = len(file_counts_df)
+    total_batches = (total_updates + batch_size - 1) // batch_size
+    
+    logger.debug(f"Updating file counts for {total_updates} claims in {total_batches} batches")
+    
+    for batch_num in range(total_batches):
+        start_idx = batch_num * batch_size
+        end_idx = min(start_idx + batch_size, total_updates)
+        batch_df = file_counts_df.iloc[start_idx:end_idx]
+        
+        try:
+            with DatabaseConnection('bgate') as connection:
+                cursor = connection.cursor()
+                
+                update_data = []
+                for _, row in batch_df.iterrows():
+                    raw_data = {
+                        "total_files": row["total_files"],
+                        "claim_id": row["CLAIM_ID"]
+                    }
+                    # Convert pandas/numpy types to Oracle-compatible types
+                    safe_data = convert_pandas_types_for_oracle(raw_data)
+                    update_data.append(safe_data)
+                
+                update_query = """
+                    UPDATE CLAIM_STATUS 
+                    SET TOTAL_FILES_COUNT = :total_files,
+                        LAST_MODIFIED_DATE = CURRENT_TIMESTAMP
+                    WHERE CLAIM_ID = :claim_id
+                """
+                
+                cursor.executemany(update_query, update_data)
+                connection.commit()
+                cursor.close()
+                
+        except Exception as error:
+            logger.error(f"❌ Error updating file counts batch {batch_num + 1}: {error}")
+            continue
+    
+    logger.debug(f"✅ File count updates completed")
 
 
 def mark_old_files_obsolete(claim_id):
