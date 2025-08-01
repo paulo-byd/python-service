@@ -143,3 +143,10 @@ GROUP BY
     cs.AUDIT_STATUS, cs.LAST_DMS_UPDATE_DATE, cs.AUDITING_DATE,
     cs.CREATED_DATE, cs.LAST_MODIFIED_DATE;
 
+
+ALTER TABLE CLAIM_STATUS
+ADD (
+    -- To store financial amounts after internal processing or auditing
+    LABOUR_AMOUNT_PROCESSING NUMBER(15,2),
+    PART_AMOUNT_PROCESSING NUMBER(15,2)
+);
