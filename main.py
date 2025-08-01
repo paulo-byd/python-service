@@ -139,14 +139,10 @@ def download_pdf(file_id, create_date, claim_id, config):
                     f"✅ Successfully saved: {local_filepath} ({file_size} bytes)"
                 )
                 logger.info(f"📊 PERFORMANCE - FILE_ID {file_id}:")
-                logger.info(f"   Total time: {total_download_time:.3f}s")
-                logger.info(f"   Network time (headers): {headers_time:.3f}s")
-                logger.info(f"   Network time (total): {network_time:.3f}s")
-                logger.info(f"   File write time: {file_write_time:.3f}s")
+                logger.info(f"   Total time: {total_download_time:.3f}s; Network time (total): {network_time:.3f}s; File write time: {file_write_time:.3f}s")
                 logger.info(
                     f"   Download speed: {file_size / network_time / 1024:.2f} KB/s"
                 )
-
                 # Store performance data for analysis
                 with download_times_lock:
                     download_times.append(
