@@ -2,7 +2,11 @@ import oracledb
 import pandas as pd
 import yaml
 import logging
+import warnings
 from datetime import datetime, timedelta
+
+# Suppress pandas SQLAlchemy warning for Oracle connections
+warnings.filterwarnings('ignore', message='pandas only supports SQLAlchemy connectable')
 
 # Initialize Oracle client for THICK mode
 try:
@@ -802,12 +806,9 @@ def get_claims_needing_download():
             # 1. New claims (not in CLAIM_STATUS)
             # 2. DMS UPDATE_DATE > stored LAST_DMS_UPDATE_DATE
             # 3. Claims with ATTACHMENT_STATUS != 'COMPLETE'
-
             needs_download = merged_df[
-                (merged_df["LAST_DMS_UPDATE_DATE"].isna())  # New claims
-                | (
-                    merged_df["UPDATE_DATE"] > merged_df["LAST_DMS_UPDATE_DATE"]
-                )  # Updated claims
+                merged_df["LAST_DMS_UPDATE_DATE"].isna()  # New claims
+                | (merged_df["UPDATE_DATE"] > merged_df["LAST_DMS_UPDATE_DATE"])  # Updated claims
                 | (merged_df["ATTACHMENT_STATUS"] != "COMPLETE")  # Incomplete downloads
             ]
         else:
@@ -865,8 +866,7 @@ def _get_new_files_to_download_impl(max_claims=None):
     try:
         # Load config for performance settings
         config = load_config()
-        if max_claims is None:
-            max_claims = config.get("database", {}).get("max_claims_per_cycle", 1000)
+        max_claims = config.get("database", {}).get("max_claims_per_cycle")
         batch_size = config.get("database", {}).get("file_query_batch_size", 500)
         
         # First, get claims that need downloading with early filtering
@@ -877,11 +877,14 @@ def _get_new_files_to_download_impl(max_claims=None):
             return pd.DataFrame()
 
         # Limit the number of claims processed in one batch for performance
-        if len(claims_needing_download) > max_claims:
-            logger.info(f"Limiting processing to {max_claims} claims out of {len(claims_needing_download)} total (configured limit)")
-            # Sort by priority (most recent updates first)
-            claims_needing_download = claims_needing_download.sort_values('UPDATE_DATE', ascending=False).head(max_claims)
-
+        if max_claims:
+            if len(claims_needing_download) > max_claims:
+                logger.info(f"Limiting processing to {max_claims} claims out of {len(claims_needing_download)} total (configured limit)")
+                # Sort by priority (most recent updates first)
+                claims_needing_download = claims_needing_download.sort_values('UPDATE_DATE', ascending=False).head(max_claims)
+        else:
+            logger.info("No max_claims configured, processing all claims.")
+            claims_needing_download = claims_needing_download.sort_values('UPDATE_DATE', ascending=False)
         claim_ids = claims_needing_download["CLAIM_ID"].tolist()
         logger.info(f"Getting files for {len(claim_ids)} claims")
 
@@ -893,9 +896,11 @@ def _get_new_files_to_download_impl(max_claims=None):
             return pd.DataFrame()
 
         # For each claim that needs downloading, mark old files as obsolete
-        logger.info("Marking old files as obsolete...")
-        for claim_id in claim_ids:
-            mark_old_files_obsolete(claim_id)
+        if len(claim_ids) > 1000:
+            logger.info(f"Marking old files as obsolete for {len(claim_ids)} claims (will process in batches due to Oracle limit)...")
+        else:
+            logger.info(f"Marking old files as obsolete for {len(claim_ids)} claims...")
+        mark_old_files_obsolete(claim_ids)
 
         # Get PDF files for claims needing download, in smaller batches for better performance
         all_files = []
@@ -1043,47 +1048,75 @@ def batch_update_file_counts(file_counts_df, batch_size=100):
     logger.debug(f"✅ File count updates completed")
 
 
-def mark_old_files_obsolete(claim_id):
+def mark_old_files_obsolete(claim_ids):
     """
-    Mark existing PDF files for a claim as obsolete (IS_LATEST_VERSION = 'N')
-    when the claim has been updated in DMS.
+    Mark existing PDF files for claims as obsolete (IS_LATEST_VERSION = 'N')
+    when the claims have been updated in DMS.
+    Handles Oracle's 1000-item IN clause limit by processing in batches.
     """
-    connection = None
-    cursor = None
+    if not claim_ids:
+        return  # Nothing to do
+    
+    # Convert single ID to list for consistency
+    if not isinstance(claim_ids, list):
+        claim_ids = [claim_ids]
+    
+    total_updated = 0
+    batch_size = 999  # Oracle limit is 1000, use 999 to be safe
+    total_batches = (len(claim_ids) + batch_size - 1) // batch_size
+    
+    logger.debug(f"Marking old files obsolete for {len(claim_ids)} claims in {total_batches} batches")
+    
+    for batch_num in range(total_batches):
+        start_idx = batch_num * batch_size
+        end_idx = min(start_idx + batch_size, len(claim_ids))
+        batch_claim_ids = claim_ids[start_idx:end_idx]
+        
+        try:
+            with DatabaseConnection('bgate') as connection:
+                cursor = connection.cursor()
 
-    try:
-        connection = get_bgate_db_connection()
-        cursor = connection.cursor()
+                # Build the correct number of bind variables for the IN clause
+                bind_vars = ','.join([f':id{i}' for i in range(len(batch_claim_ids))])
+                update_query = f"""
+                    UPDATE PDF_DOWNLOAD_DMS_CLAIMS 
+                    SET IS_LATEST_VERSION = 'N',
+                        LAST_MODIFIED_DATE = CURRENT_TIMESTAMP
+                    WHERE CLAIM_ID IN ({bind_vars})
+                    AND IS_LATEST_VERSION = 'Y'
+                """
 
-        update_query = """
-            UPDATE PDF_DOWNLOAD_DMS_CLAIMS 
-            SET IS_LATEST_VERSION = 'N',
-                LAST_MODIFIED_DATE = CURRENT_TIMESTAMP
-            WHERE CLAIM_ID = :claim_id 
-            AND IS_LATEST_VERSION = 'Y'
-        """
+                # Build the parameter dictionary with type conversion
+                params = {}
+                for i, claim_id in enumerate(batch_claim_ids):
+                    # Convert numpy int64 to Python int if needed
+                    if hasattr(claim_id, 'dtype'):
+                        params[f'id{i}'] = int(claim_id)
+                    else:
+                        params[f'id{i}'] = claim_id
 
-        cursor.execute(update_query, {"claim_id": claim_id})
-        updated_count = cursor.rowcount
-        connection.commit()
-
-        if updated_count > 0:
-            logger.info(
-                f"✅ Marked {updated_count} files as obsolete for CLAIM_ID {claim_id}"
-            )
-
-    except Exception as error:
-        logger.error(
-            f"❌ Error marking old files obsolete for CLAIM_ID {claim_id}: {error}"
-        )
-        if connection:
-            connection.rollback()
-        raise
-    finally:
-        if cursor:
-            cursor.close()
-        if connection:
-            connection.close()
+                cursor.execute(update_query, params)
+                batch_updated = cursor.rowcount
+                connection.commit()
+                cursor.close()
+                
+                total_updated += batch_updated
+                
+                if batch_updated > 0:
+                    logger.debug(f"Batch {batch_num + 1}/{total_batches}: Marked {batch_updated} files obsolete")
+                    
+        except Exception as error:
+            logger.error(f"❌ Error marking old files obsolete for batch {batch_num + 1}: {error}")
+            # Continue with next batch instead of failing entirely
+            continue
+    
+    if total_updated > 0:
+        # Show sample of claim IDs for logging
+        sample_ids = claim_ids[:3]
+        id_display = f"{sample_ids}{'...' if len(claim_ids) > 3 else ''}"
+        logger.info(f"✅ Marked {total_updated} files as obsolete for {len(claim_ids)} claims {id_display}")
+    else:
+        logger.debug(f"No files needed to be marked obsolete for {len(claim_ids)} claims")
 
 
 def update_claim_file_count(claim_id, total_files):
