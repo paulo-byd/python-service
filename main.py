@@ -873,7 +873,36 @@ if __name__ == "__main__":
                     f"Invalid environment mode: {env_mode}. Using default: local"
                 )
         else:
+            db_handler.set_environment_mode("local")
             logger.info("Using default environment mode: local")
+
+        # Initialize database connection pools
+        logger.info("Initializing database connection pools...")
+        try:
+            db_handler.initialize_connection_pools(
+                min_connections=config.get("database", {}).get("min_connections", 2),
+                max_connections=config.get("database", {}).get("max_connections", 10)
+            )
+            logger.info("✅ Database connection pools initialized successfully")
+            # Verify pool status
+            db_handler.get_pool_status()
+            
+            # Test pool connectivity
+            logger.info("Testing pool connectivity...")
+            try:
+                with db_handler.DatabaseConnection('bgate') as test_conn:
+                    cursor = test_conn.cursor()
+                    cursor.execute("SELECT 1 FROM DUAL")
+                    result = cursor.fetchone()
+                    cursor.close()
+                    logger.info("✅ Pool connectivity test successful")
+            except Exception as test_error:
+                logger.error(f"❌ Pool connectivity test failed: {test_error}")
+        except Exception as pool_error:
+            logger.error(f"Failed to initialize connection pools: {pool_error}")
+            logger.warning("⚠️ Falling back to direct connections")
+            # Show current pool status for debugging
+            db_handler.get_pool_status()
 
     except Exception as e:
         logger.error(f"Configuration validation failed: {e}")
@@ -943,3 +972,7 @@ if __name__ == "__main__":
         scheduler.start()
     except (KeyboardInterrupt, SystemExit):
         logger.info("Scheduler stopped by user.")
+    finally:
+        # Cleanup connection pools on exit
+        logger.info("Cleaning up database connection pools...")
+        db_handler.close_connection_pools()

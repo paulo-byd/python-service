@@ -16,11 +16,173 @@ except Exception as e:
 # Global environment mode
 _ENVIRONMENT_MODE = "local"  # default to local
 
+# Global connection pools
+_DMS_POOL = None
+_BGATE_POOL = None
+
 
 def set_environment_mode(mode):
     """Set the environment mode for database connections"""
     global _ENVIRONMENT_MODE
     _ENVIRONMENT_MODE = mode
+
+
+def initialize_connection_pools(min_connections=2, max_connections=10):
+    """Initialize connection pools for both databases"""
+    global _DMS_POOL, _BGATE_POOL
+    
+    logger.info(f"Starting pool initialization with environment mode: {_ENVIRONMENT_MODE}")
+    
+    # Verify Oracle client is initialized
+    try:
+        # Test Oracle client availability
+        import oracledb
+        logger.info(f"Oracle client version: {oracledb.__version__}")
+    except Exception as oracle_error:
+        logger.error(f"Oracle client not available: {oracle_error}")
+        raise
+    
+    try:
+        db_config = get_current_config()
+        logger.debug(f"Database config retrieved for environment: {_ENVIRONMENT_MODE}")
+        logger.debug(f"DMS config: user={db_config['dms_db']['user']}, dsn={db_config['dms_db']['dsn']}")
+        logger.debug(f"BGATE config: user={db_config['bgate_db']['user']}, dsn={db_config['bgate_db']['dsn']}")
+        
+        # Initialize DMS pool
+        logger.info("Initializing DMS connection pool...")
+        try:
+            _DMS_POOL = oracledb.create_pool(
+                user=db_config["dms_db"]["user"],
+                password=db_config["dms_db"]["password"],
+                dsn=db_config["dms_db"]["dsn"],
+                min=min_connections,
+                max=max_connections,
+                increment=1,
+                getmode=oracledb.POOL_GETMODE_WAIT
+            )
+        except Exception as e:
+            if "getmode" in str(e):
+                logger.info("Falling back to basic pool parameters...")
+                _DMS_POOL = oracledb.create_pool(
+                    user=db_config["dms_db"]["user"],
+                    password=db_config["dms_db"]["password"],
+                    dsn=db_config["dms_db"]["dsn"],
+                    min=min_connections,
+                    max=max_connections,
+                    increment=1
+                )
+            else:
+                raise
+        logger.info(f"✅ DMS connection pool initialized (min={min_connections}, max={max_connections})")
+        
+        # Initialize BGATE pool
+        logger.info("Initializing BGATE connection pool...")
+        try:
+            _BGATE_POOL = oracledb.create_pool(
+                user=db_config["bgate_db"]["user"],
+                password=db_config["bgate_db"]["password"],
+                dsn=db_config["bgate_db"]["dsn"],
+                min=min_connections,
+                max=max_connections,
+                increment=1,
+                getmode=oracledb.POOL_GETMODE_WAIT
+            )
+        except Exception as e:
+            if "getmode" in str(e):
+                logger.info("Falling back to basic pool parameters...")
+                _BGATE_POOL = oracledb.create_pool(
+                    user=db_config["bgate_db"]["user"],
+                    password=db_config["bgate_db"]["password"],
+                    dsn=db_config["bgate_db"]["dsn"],
+                    min=min_connections,
+                    max=max_connections,
+                    increment=1
+                )
+            else:
+                raise
+        logger.info(f"✅ BGATE connection pool initialized (min={min_connections}, max={max_connections})")
+        
+        # Verify pools are accessible globally
+        if _DMS_POOL is None or _BGATE_POOL is None:
+            raise Exception("Pools were not properly assigned to global variables")
+            
+        logger.info(f"✅ All connection pools initialized successfully")
+        
+    except Exception as error:
+        logger.error(f"❌ Error initializing connection pools: {error}")
+        logger.error(f"❌ Environment mode: {_ENVIRONMENT_MODE}")
+        # Don't set pools to None if they were partially initialized
+        raise
+
+
+def get_pool_status():
+    """Get current status of connection pools for debugging"""
+    global _DMS_POOL, _BGATE_POOL
+    
+    dms_status = "initialized" if _DMS_POOL is not None else "not initialized"
+    bgate_status = "initialized" if _BGATE_POOL is not None else "not initialized"
+    
+    logger.info(f"Pool Status - DMS: {dms_status}, BGATE: {bgate_status}, Environment: {_ENVIRONMENT_MODE}")
+    
+    if _DMS_POOL:
+        try:
+            logger.info(f"DMS Pool - Open: {_DMS_POOL.opened}, Busy: {_DMS_POOL.busy}, Max: {_DMS_POOL.max}")
+        except:
+            logger.warning("Could not get DMS pool statistics")
+            
+    if _BGATE_POOL:
+        try:
+            logger.info(f"BGATE Pool - Open: {_BGATE_POOL.opened}, Busy: {_BGATE_POOL.busy}, Max: {_BGATE_POOL.max}")
+        except:
+            logger.warning("Could not get BGATE pool statistics")
+
+
+def close_connection_pools():
+    """Close connection pools - call during application shutdown"""
+    global _DMS_POOL, _BGATE_POOL
+    
+    try:
+        if _DMS_POOL:
+            _DMS_POOL.close()
+            _DMS_POOL = None
+            logger.info("✅ DMS connection pool closed")
+            
+        if _BGATE_POOL:
+            _BGATE_POOL.close()
+            _BGATE_POOL = None
+            logger.info("✅ BGATE connection pool closed")
+            
+    except Exception as error:
+        logger.error(f"❌ Error closing connection pools: {error}")
+
+
+class DatabaseConnection:
+    """Context manager for database connections that properly returns connections to pool"""
+    
+    def __init__(self, pool_type='bgate'):
+        self.pool_type = pool_type
+        self.connection = None
+        self.from_pool = False
+        
+    def __enter__(self):
+        if self.pool_type == 'dms':
+            self.connection = get_dms_db_connection()
+            self.from_pool = _DMS_POOL is not None
+        else:  # bgate
+            self.connection = get_bgate_db_connection()
+            self.from_pool = _BGATE_POOL is not None
+        return self.connection
+        
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self.connection:
+            if self.from_pool:
+                # Return to pool
+                self.connection.close()
+                logger.debug(f"{self.pool_type.upper()} connection returned to pool")
+            else:
+                # Direct connection, close normally
+                self.connection.close()
+                logger.debug(f"{self.pool_type.upper()} direct connection closed")
 
 
 # Environment-specific database configurations
@@ -88,36 +250,64 @@ def load_config():
 
 
 def get_dms_db_connection():
-    """Establishes and returns a connection to the DMS database (for reading) using Oracle DB THICK mode."""
-    db_config = get_current_config()["dms_db"]
+    """Gets a connection from the DMS database pool (for reading) using Oracle DB THICK mode."""
+    global _DMS_POOL
+    
+    if _DMS_POOL is None:
+        # Fallback to direct connection if pool not initialized
+        logger.warning("DMS pool not initialized, creating direct connection")
+        db_config = get_current_config()["dms_db"]
+        try:
+            connection = oracledb.connect(
+                user=db_config["user"],
+                password=db_config["password"],
+                dsn=db_config["dsn"],
+                mode=oracledb.DEFAULT_AUTH,
+            )
+            logger.info("DMS Database connection established (THICK mode - direct)")
+            return connection
+        except oracledb.Error as error:
+            logger.error(f"Error connecting to DMS Oracle Database (THICK mode): {error}")
+            raise
+    
     try:
-        connection = oracledb.connect(
-            user=db_config["user"],
-            password=db_config["password"],
-            dsn=db_config["dsn"],
-            mode=oracledb.DEFAULT_AUTH,
-        )
-        logger.info("DMS Database connection established (THICK mode)")
+        connection = _DMS_POOL.acquire()
+        logger.debug("DMS Database connection acquired from pool")
         return connection
     except oracledb.Error as error:
-        logger.error(f"Error connecting to DMS Oracle Database (THICK mode): {error}")
+        logger.error(f"Error acquiring DMS connection from pool: {error}")
         raise
 
 
 def get_bgate_db_connection():
-    """Establishes and returns a connection to the BGATE database (for writing)."""
-    db_config = get_current_config()["bgate_db"]
+    """Gets a connection from the BGATE database pool (for writing)."""
+    global _BGATE_POOL
+    
+    logger.debug(f"get_bgate_db_connection called, pool status: {_BGATE_POOL is not None}")
+    
+    if _BGATE_POOL is None:
+        # Fallback to direct connection if pool not initialized
+        logger.warning(f"BGATE pool not initialized (env: {_ENVIRONMENT_MODE}), creating direct connection")
+        db_config = get_current_config()["bgate_db"]
+        try:
+            connection = oracledb.connect(
+                user=db_config["user"],
+                password=db_config["password"],
+                dsn=db_config["dsn"],
+                mode=oracledb.DEFAULT_AUTH,
+            )
+            logger.info("BGATE Database connection established (THICK mode - direct)")
+            return connection
+        except oracledb.Error as error:
+            logger.error(f"Error connecting to BGATE Oracle Database: {error}")
+            raise
+    
     try:
-        connection = oracledb.connect(
-            user=db_config["user"],
-            password=db_config["password"],
-            dsn=db_config["dsn"],
-            mode=oracledb.DEFAULT_AUTH,
-        )
-        logger.info("BGATE Database connection established (THICK mode)")
+        connection = _BGATE_POOL.acquire()
+        logger.debug("BGATE Database connection acquired from pool")
         return connection
     except oracledb.Error as error:
-        logger.error(f"Error connecting to BGATE Oracle Database: {error}")
+        logger.error(f"Error acquiring BGATE connection from pool: {error}")
         raise
 
 
@@ -211,73 +401,64 @@ def upsert_claim_status(claim_data):
             CLAIM_ID, CLAIM_NO, VIN, DEALER_CODE, DEALER_NAME, REPORT_DATE,
             GROSS_CREDIT, LABOUR_AMOUNT_DMS, PART_AMOUNT_DMS, LAST_DMS_UPDATE_DATE, AUDITING_DATE
     """
-    connection = None
-    cursor = None
-
     try:
-        connection = get_bgate_db_connection()
-        cursor = connection.cursor()
+        with DatabaseConnection('bgate') as connection:
+            cursor = connection.cursor()
+            
+            merge_query = """
+                MERGE INTO CLAIM_STATUS dest
+                USING (
+                    SELECT 
+                        :claim_id AS CLAIM_ID,
+                        :claim_no AS CLAIM_NO,
+                        :vin AS VIN,
+                        :dealer_code AS DEALER_CODE,
+                        :dealer_name AS DEALER_NAME,
+                        :report_date AS REPORT_DATE,
+                        :gross_credit AS GROSS_CREDIT,
+                        :labour_amount AS LABOUR_AMOUNT_DMS,
+                        :part_amount AS PART_AMOUNT_DMS,
+                        :last_dms_update AS LAST_DMS_UPDATE_DATE,
+                        :auditing_date AS AUDITING_DATE
+                    FROM DUAL
+                ) src ON (dest.CLAIM_ID = src.CLAIM_ID)
+                WHEN MATCHED THEN
+                    UPDATE SET
+                        dest.CLAIM_NO = src.CLAIM_NO,
+                        dest.VIN = src.VIN,
+                        dest.DEALER_CODE = src.DEALER_CODE,
+                        dest.DEALER_NAME = src.DEALER_NAME,
+                        dest.REPORT_DATE = src.REPORT_DATE,
+                        dest.GROSS_CREDIT = src.GROSS_CREDIT,
+                        dest.LABOUR_AMOUNT_DMS = src.LABOUR_AMOUNT_DMS,
+                        dest.PART_AMOUNT_DMS = src.PART_AMOUNT_DMS,
+                        dest.LAST_DMS_UPDATE_DATE = src.LAST_DMS_UPDATE_DATE,
+                        dest.AUDITING_DATE = src.AUDITING_DATE,
+                        dest.LAST_MODIFIED_DATE = CURRENT_TIMESTAMP
+                WHEN NOT MATCHED THEN
+                    INSERT (
+                        CLAIM_ID, CLAIM_NO, VIN, DEALER_CODE, DEALER_NAME, REPORT_DATE,
+                        GROSS_CREDIT, LABOUR_AMOUNT_DMS, PART_AMOUNT_DMS, 
+                        LAST_DMS_UPDATE_DATE, AUDITING_DATE, ATTACHMENT_STATUS
+                    )
+                    VALUES (
+                        src.CLAIM_ID, src.CLAIM_NO, src.VIN, src.DEALER_CODE, src.DEALER_NAME, src.REPORT_DATE,
+                        src.GROSS_CREDIT, src.LABOUR_AMOUNT_DMS, src.PART_AMOUNT_DMS,
+                        src.LAST_DMS_UPDATE_DATE, src.AUDITING_DATE, 'PENDING'
+                    )
+            """
 
-        merge_query = """
-            MERGE INTO CLAIM_STATUS dest
-            USING (
-                SELECT 
-                    :claim_id AS CLAIM_ID,
-                    :claim_no AS CLAIM_NO,
-                    :vin AS VIN,
-                    :dealer_code AS DEALER_CODE,
-                    :dealer_name AS DEALER_NAME,
-                    :report_date AS REPORT_DATE,
-                    :gross_credit AS GROSS_CREDIT,
-                    :labour_amount AS LABOUR_AMOUNT_DMS,
-                    :part_amount AS PART_AMOUNT_DMS,
-                    :last_dms_update AS LAST_DMS_UPDATE_DATE,
-                    :auditing_date AS AUDITING_DATE
-                FROM DUAL
-            ) src ON (dest.CLAIM_ID = src.CLAIM_ID)
-            WHEN MATCHED THEN
-                UPDATE SET
-                    dest.CLAIM_NO = src.CLAIM_NO,
-                    dest.VIN = src.VIN,
-                    dest.DEALER_CODE = src.DEALER_CODE,
-                    dest.DEALER_NAME = src.DEALER_NAME,
-                    dest.REPORT_DATE = src.REPORT_DATE,
-                    dest.GROSS_CREDIT = src.GROSS_CREDIT,
-                    dest.LABOUR_AMOUNT_DMS = src.LABOUR_AMOUNT_DMS,
-                    dest.PART_AMOUNT_DMS = src.PART_AMOUNT_DMS,
-                    dest.LAST_DMS_UPDATE_DATE = src.LAST_DMS_UPDATE_DATE,
-                    dest.AUDITING_DATE = src.AUDITING_DATE,
-                    dest.LAST_MODIFIED_DATE = CURRENT_TIMESTAMP
-            WHEN NOT MATCHED THEN
-                INSERT (
-                    CLAIM_ID, CLAIM_NO, VIN, DEALER_CODE, DEALER_NAME, REPORT_DATE,
-                    GROSS_CREDIT, LABOUR_AMOUNT_DMS, PART_AMOUNT_DMS, 
-                    LAST_DMS_UPDATE_DATE, AUDITING_DATE, ATTACHMENT_STATUS
-                )
-                VALUES (
-                    src.CLAIM_ID, src.CLAIM_NO, src.VIN, src.DEALER_CODE, src.DEALER_NAME, src.REPORT_DATE,
-                    src.GROSS_CREDIT, src.LABOUR_AMOUNT_DMS, src.PART_AMOUNT_DMS,
-                    src.LAST_DMS_UPDATE_DATE, src.AUDITING_DATE, 'PENDING'
-                )
-        """
+            cursor.execute(merge_query, claim_data)
+            connection.commit()
+            cursor.close()
 
-        cursor.execute(merge_query, claim_data)
-        connection.commit()
-
-        logger.info(f"✅ Upserted claim status for CLAIM_ID {claim_data['claim_id']}")
+            logger.info(f"✅ Upserted claim status for CLAIM_ID {claim_data['claim_id']}")
 
     except Exception as error:
         logger.error(
             f"❌ Error upserting claim status for CLAIM_ID {claim_data.get('claim_id', 'unknown')}: {error}"
         )
-        if connection:
-            connection.rollback()
         raise
-    finally:
-        if cursor:
-            cursor.close()
-        if connection:
-            connection.close()
 
 
 def get_claims_needing_download():
