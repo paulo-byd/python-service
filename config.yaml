@@ -4,7 +4,7 @@
 download:
   base_url: "https://sadcsapi.bydauto.com/file/download?fileUrl="
   # storage_path: "/mnt/sdb/bgate/pdf-claims/"  # Production path
-  storage_path: "./pdf-claims/"  # Paulo's local path
+  storage_path: "./pdf-claims/"  # Local test path
   
   # Download behavior settings
   timeout_seconds: 60
