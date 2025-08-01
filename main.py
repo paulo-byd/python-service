@@ -888,16 +888,28 @@ if __name__ == "__main__":
             db_handler.get_pool_status()
             
             # Test pool connectivity
-            logger.info("Testing pool connectivity...")
+            logger.info("Testing BGATE pool connectivity...")
             try:
                 with db_handler.DatabaseConnection('bgate') as test_conn:
                     cursor = test_conn.cursor()
                     cursor.execute("SELECT 1 FROM DUAL")
                     result = cursor.fetchone()
                     cursor.close()
-                    logger.info("✅ Pool connectivity test successful")
+                    logger.info("✅ BGATE pool connectivity test successful")
             except Exception as test_error:
-                logger.error(f"❌ Pool connectivity test failed: {test_error}")
+                logger.error(f"❌ BGATE pool connectivity test failed: {test_error}")
+            
+            # Test DMS direct connectivity
+            logger.info("Testing DMS direct connectivity...")
+            try:
+                with db_handler.DatabaseConnection('dms') as test_conn:
+                    cursor = test_conn.cursor()
+                    cursor.execute("SELECT 1 FROM DUAL")
+                    result = cursor.fetchone()
+                    cursor.close()
+                    logger.info("✅ DMS direct connectivity test successful")
+            except Exception as test_error:
+                logger.error(f"❌ DMS direct connectivity test failed: {test_error}")
         except Exception as pool_error:
             logger.error(f"Failed to initialize connection pools: {pool_error}")
             logger.warning("⚠️ Falling back to direct connections")
