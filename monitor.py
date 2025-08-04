@@ -2,6 +2,7 @@
 """
 PDF Download Service Monitoring Script
 Provides health checks, statistics, and maintenance for the PDF download service
+Updated to work with the new database structure including CLAIM_STATUS table
 """
 
 import sys
@@ -22,12 +23,13 @@ def check_service_health(connection):
     print("=" * 50)
 
     try:
-        # Get basic statistics
+        # Get basic download statistics
         stats_query = """
             SELECT 
                 STATUS,
                 COUNT(*) as COUNT
             FROM PDF_DOWNLOAD_DMS_CLAIMS 
+            WHERE IS_LATEST_VERSION = 'Y'
             GROUP BY STATUS
         """
         cursor = connection.cursor()
@@ -36,7 +38,7 @@ def check_service_health(connection):
         cursor.close()
 
         total_files = sum([row[1] for row in stats])
-        print(f"📊 Total files tracked: {total_files}")
+        print(f"📊 Total files tracked (latest version): {total_files}")
 
         for status, count in stats:
             percentage = (count / total_files * 100) if total_files > 0 else 0
@@ -47,6 +49,7 @@ def check_service_health(connection):
             SELECT COUNT(*) 
             FROM PDF_DOWNLOAD_DMS_CLAIMS 
             WHERE DOWNLOAD_TIMESTAMP >= SYSDATE - 1
+            AND IS_LATEST_VERSION = 'Y'
         """
         cursor = connection.cursor()
         cursor.execute(recent_query)
@@ -60,17 +63,34 @@ def check_service_health(connection):
             SELECT COUNT(*) 
             FROM PDF_DOWNLOAD_DMS_CLAIMS 
             WHERE STATUS = 'FAILED' 
-            AND (RETRY_COUNT < 3 OR RETRY_COUNT IS NULL)
+            AND IS_LATEST_VERSION = 'Y'
         """
         cursor = connection.cursor()
         cursor.execute(failed_query)
-        retry_count = cursor.fetchone()[0]
+        failed_count = cursor.fetchone()[0]
         cursor.close()
 
-        if retry_count > 0:
-            print(f"⚠️  Files pending retry: {retry_count}")
+        if failed_count > 0:
+            print(f"⚠️  Failed downloads needing attention: {failed_count}")
         else:
-            print("✅ No files pending retry")
+            print("✅ No failed downloads")
+
+        # Check claim-level statistics
+        claim_stats_query = """
+            SELECT 
+                ATTACHMENT_STATUS,
+                COUNT(*) as COUNT
+            FROM CLAIM_STATUS
+            GROUP BY ATTACHMENT_STATUS
+        """
+        cursor = connection.cursor()
+        cursor.execute(claim_stats_query)
+        claim_stats = cursor.fetchall()
+        cursor.close()
+
+        print(f"\n📋 Claim Status Overview:")
+        for status, count in claim_stats:
+            print(f"   {status}: {count} claims")
 
         # Check storage usage
         storage_query = """
@@ -78,7 +98,9 @@ def check_service_health(connection):
                 ROUND(SUM(FILE_SIZE_BYTES) / 1024 / 1024 / 1024, 2) as SIZE_GB,
                 COUNT(*) as FILE_COUNT
             FROM PDF_DOWNLOAD_DMS_CLAIMS 
-            WHERE STATUS = 'SUCCESS' AND FILE_SIZE_BYTES IS NOT NULL
+            WHERE STATUS = 'SUCCESS' 
+            AND IS_LATEST_VERSION = 'Y'
+            AND FILE_SIZE_BYTES IS NOT NULL
         """
         cursor = connection.cursor()
         cursor.execute(storage_query)
@@ -89,6 +111,22 @@ def check_service_health(connection):
             print(
                 f"💾 Storage used: {storage_result[0]} GB ({storage_result[1]} files)"
             )
+
+        # Check for claims with incomplete downloads
+        incomplete_claims_query = """
+            SELECT COUNT(*)
+            FROM CLAIM_STATUS
+            WHERE ATTACHMENT_STATUS IN ('PENDING', 'PARTIAL')
+        """
+        cursor = connection.cursor()
+        cursor.execute(incomplete_claims_query)
+        incomplete_count = cursor.fetchone()[0]
+        cursor.close()
+
+        if incomplete_count > 0:
+            print(f"⚠️  Claims with incomplete downloads: {incomplete_count}")
+        else:
+            print("✅ All tracked claims have complete downloads")
 
     except Exception as e:
         print(f"❌ Health check failed: {e}")
@@ -106,19 +144,22 @@ def show_recent_activity(connection, hours=24):
     try:
         query = """
             SELECT 
-                CLAIM_NO,
-                FILE_ID,
-                REMOTE_FILE_NAME,
-                STATUS,
-                TO_CHAR(DOWNLOAD_TIMESTAMP, 'YYYY-MM-DD HH24:MI:SS') as DOWNLOAD_TIME,
+                pdf.CLAIM_NO,
+                pdf.FILE_ID,
+                pdf.REMOTE_FILE_NAME,
+                pdf.STATUS,
+                TO_CHAR(pdf.DOWNLOAD_TIMESTAMP, 'YYYY-MM-DD HH24:MI:SS') as DOWNLOAD_TIME,
                 CASE 
-                    WHEN ERROR_MESSAGE IS NOT NULL THEN 
-                        SUBSTR(ERROR_MESSAGE, 1, 50) || CASE WHEN LENGTH(ERROR_MESSAGE) > 50 THEN '...' ELSE '' END
+                    WHEN pdf.ERROR_MESSAGE IS NOT NULL THEN 
+                        SUBSTR(pdf.ERROR_MESSAGE, 1, 50) || CASE WHEN LENGTH(pdf.ERROR_MESSAGE) > 50 THEN '...' ELSE '' END
                     ELSE NULL 
-                END as ERROR_SUMMARY
-            FROM PDF_DOWNLOAD_DMS_CLAIMS 
-            WHERE DOWNLOAD_TIMESTAMP >= SYSDATE - :hours/24
-            ORDER BY DOWNLOAD_TIMESTAMP DESC
+                END as ERROR_SUMMARY,
+                cs.ATTACHMENT_STATUS
+            FROM PDF_DOWNLOAD_DMS_CLAIMS pdf
+            LEFT JOIN CLAIM_STATUS cs ON pdf.CLAIM_ID = cs.CLAIM_ID
+            WHERE pdf.DOWNLOAD_TIMESTAMP >= SYSDATE - :hours/24
+            AND pdf.IS_LATEST_VERSION = 'Y'
+            ORDER BY pdf.DOWNLOAD_TIMESTAMP DESC
             FETCH FIRST 20 ROWS ONLY
         """
 
@@ -132,19 +173,20 @@ def show_recent_activity(connection, hours=24):
             return
 
         print(
-            f"{'Claim':<12} {'File ID':<10} {'Status':<8} {'Download Time':<20} {'Error':<30}"
+            f"{'Claim':<12} {'File ID':<10} {'Status':<8} {'Download Time':<20} {'Claim Status':<12} {'Error':<30}"
         )
-        print("-" * 80)
+        print("-" * 100)
 
         for row in results:
             claim_no = row[0] or "N/A"
             file_id = row[1][:8] + "..." if len(row[1]) > 8 else row[1]
-            status = row[3]
-            download_time = row[4]
-            error = row[5] or ""
+            status = row[2]
+            download_time = row[3]
+            error = row[4] or ""
+            claim_status = row[5] or "N/A"
 
             print(
-                f"{claim_no:<12} {file_id:<10} {status:<8} {download_time:<20} {error:<30}"
+                f"{claim_no:<12} {file_id:<10} {status:<8} {download_time:<20} {claim_status:<12} {error:<30}"
             )
 
     except Exception as e:
@@ -159,16 +201,19 @@ def show_failed_downloads(connection):
     try:
         query = """
             SELECT 
-                CLAIM_NO,
-                FILE_ID,
-                RETRY_COUNT,
-                TO_CHAR(DOWNLOAD_TIMESTAMP, 'YYYY-MM-DD HH24:MI') as FIRST_ATTEMPT,
-                TO_CHAR(LAST_RETRY_TIMESTAMP, 'YYYY-MM-DD HH24:MI') as LAST_RETRY,
-                SUBSTR(ERROR_MESSAGE, 1, 60) as ERROR_SUMMARY
-            FROM PDF_DOWNLOAD_DMS_CLAIMS 
-            WHERE STATUS = 'FAILED' 
-            AND (RETRY_COUNT < 3 OR RETRY_COUNT IS NULL)
-            ORDER BY DOWNLOAD_TIMESTAMP
+                pdf.CLAIM_NO,
+                pdf.FILE_ID,
+                TO_CHAR(pdf.DOWNLOAD_TIMESTAMP, 'YYYY-MM-DD HH24:MI') as DOWNLOAD_TIME,
+                SUBSTR(pdf.ERROR_MESSAGE, 1, 80) as ERROR_SUMMARY,
+                cs.ATTACHMENT_STATUS,
+                cs.TOTAL_FILES_COUNT,
+                cs.DOWNLOADED_FILES_COUNT
+            FROM PDF_DOWNLOAD_DMS_CLAIMS pdf
+            LEFT JOIN CLAIM_STATUS cs ON pdf.CLAIM_ID = cs.CLAIM_ID
+            WHERE pdf.STATUS = 'FAILED' 
+            AND pdf.IS_LATEST_VERSION = 'Y'
+            ORDER BY pdf.DOWNLOAD_TIMESTAMP DESC
+            FETCH FIRST 20 ROWS ONLY
         """
 
         cursor = connection.cursor()
@@ -177,28 +222,135 @@ def show_failed_downloads(connection):
         cursor.close()
 
         if not results:
-            print("✅ No failed downloads needing attention")
+            print("✅ No failed downloads found")
             return
 
         print(
-            f"{'Claim':<12} {'File ID':<12} {'Retries':<8} {'First Try':<16} {'Last Retry':<16} {'Error':<30}"
+            f"{'Claim':<12} {'File ID':<12} {'Download Time':<16} {'Files':<8} {'Error':<40}"
         )
         print("-" * 100)
 
         for row in results:
             claim_no = row[0] or "N/A"
             file_id = row[1][:10] + ".." if len(row[1]) > 10 else row[1]
-            retry_count = row[2] or 0
-            first_attempt = row[3]
-            last_retry = row[4] or "Never"
-            error = row[5] or ""
+            download_time = row[2]
+            error = row[3] or "No error message"
+            attachment_status = row[4] or "N/A"
+            total_files = row[5] or 0
+            downloaded_files = row[6] or 0
+
+            files_info = f"{downloaded_files}/{total_files}"
 
             print(
-                f"{claim_no:<12} {file_id:<12} {retry_count:<8} {first_attempt:<16} {last_retry:<16} {error:<30}"
+                f"{claim_no:<12} {file_id:<12} {download_time:<16} {files_info:<8} {error:<40}"
             )
 
     except Exception as e:
         print(f"❌ Failed to get failed downloads: {e}")
+
+
+def show_claim_summary(connection):
+    """Show summary of claims by status"""
+    print("\n📊 Claims Summary by Status")
+    print("=" * 50)
+
+    try:
+        query = """
+            SELECT 
+                ATTACHMENT_STATUS,
+                AUDIT_STATUS,
+                COUNT(*) as CLAIM_COUNT,
+                AVG(TOTAL_FILES_COUNT) as AVG_FILES,
+                AVG(DOWNLOADED_FILES_COUNT) as AVG_DOWNLOADED,
+                SUM(TOTAL_FILES_COUNT) as TOTAL_FILES,
+                SUM(DOWNLOADED_FILES_COUNT) as TOTAL_DOWNLOADED
+            FROM CLAIM_STATUS
+            GROUP BY ATTACHMENT_STATUS, AUDIT_STATUS
+            ORDER BY ATTACHMENT_STATUS, AUDIT_STATUS
+        """
+
+        cursor = connection.cursor()
+        cursor.execute(query)
+        results = cursor.fetchall()
+        cursor.close()
+
+        if not results:
+            print("No claims found")
+            return
+
+        print(
+            f"{'Attachment':<12} {'Audit':<10} {'Claims':<8} {'Avg Files':<10} {'Total Files':<12} {'Downloaded':<12}"
+        )
+        print("-" * 80)
+
+        for row in results:
+            attachment_status = row[0] or "NULL"
+            audit_status = row[1] or "NULL"
+            claim_count = row[2]
+            avg_files = f"{row[3]:.1f}" if row[3] else "0.0"
+            avg_downloaded = f"{row[4]:.1f}" if row[4] else "0.0"
+            total_files = row[5] or 0
+            total_downloaded = row[6] or 0
+
+            print(
+                f"{attachment_status:<12} {audit_status:<10} {claim_count:<8} {avg_files:<10} {total_files:<12} {total_downloaded:<12}"
+            )
+
+    except Exception as e:
+        print(f"❌ Failed to get claim summary: {e}")
+
+
+def show_problematic_claims(connection):
+    """Show claims that might need attention"""
+    print("\n⚠️  Problematic Claims Needing Attention")
+    print("=" * 50)
+
+    try:
+        query = """
+            SELECT 
+                cs.CLAIM_ID,
+                cs.CLAIM_NO,
+                cs.ATTACHMENT_STATUS,
+                cs.TOTAL_FILES_COUNT,
+                cs.DOWNLOADED_FILES_COUNT,
+                (cs.TOTAL_FILES_COUNT - cs.DOWNLOADED_FILES_COUNT) as MISSING_FILES,
+                TO_CHAR(cs.LAST_DMS_UPDATE_DATE, 'YYYY-MM-DD') as LAST_UPDATE
+            FROM CLAIM_STATUS cs
+            WHERE cs.TOTAL_FILES_COUNT > cs.DOWNLOADED_FILES_COUNT
+            OR cs.ATTACHMENT_STATUS = 'PARTIAL'
+            ORDER BY (cs.TOTAL_FILES_COUNT - cs.DOWNLOADED_FILES_COUNT) DESC
+            FETCH FIRST 15 ROWS ONLY
+        """
+
+        cursor = connection.cursor()
+        cursor.execute(query)
+        results = cursor.fetchall()
+        cursor.close()
+
+        if not results:
+            print("✅ No problematic claims found")
+            return
+
+        print(
+            f"{'Claim ID':<12} {'Claim No':<15} {'Status':<10} {'Missing':<8} {'Last Update':<12}"
+        )
+        print("-" * 70)
+
+        for row in results:
+            claim_id = row[0]
+            claim_no = row[1] or "N/A"
+            attachment_status = row[2]
+            total_files = row[3] or 0
+            downloaded_files = row[4] or 0
+            missing_files = row[5] or 0
+            last_update = row[6] or "N/A"
+
+            print(
+                f"{claim_id:<12} {claim_no:<15} {attachment_status:<10} {missing_files:<8} {last_update:<12}"
+            )
+
+    except Exception as e:
+        print(f"❌ Failed to get problematic claims: {e}")
 
 
 def cleanup_old_records(connection, days=30):
@@ -212,6 +364,7 @@ def cleanup_old_records(connection, days=30):
             SELECT COUNT(*) 
             FROM PDF_DOWNLOAD_DMS_CLAIMS 
             WHERE STATUS = 'FAILED' 
+            AND IS_LATEST_VERSION = 'N'
             AND DOWNLOAD_TIMESTAMP < SYSDATE - :days
         """
 
@@ -224,7 +377,9 @@ def cleanup_old_records(connection, days=30):
             print("✅ No old failed records to clean up")
             return
 
-        print(f"Found {count_to_delete} old failed records to delete")
+        print(
+            f"Found {count_to_delete} old failed records to delete (non-latest versions only)"
+        )
 
         # Ask for confirmation
         response = input("Do you want to proceed with deletion? (y/N): ")
@@ -236,6 +391,7 @@ def cleanup_old_records(connection, days=30):
         delete_query = """
             DELETE FROM PDF_DOWNLOAD_DMS_CLAIMS 
             WHERE STATUS = 'FAILED' 
+            AND IS_LATEST_VERSION = 'N'
             AND DOWNLOAD_TIMESTAMP < SYSDATE - :days
         """
 
@@ -264,24 +420,24 @@ def reset_failed_for_retry(connection, file_ids=None):
             query = f"""
                 UPDATE PDF_DOWNLOAD_DMS_CLAIMS 
                 SET STATUS = 'PENDING',
-                    RETRY_COUNT = 0,
-                    LAST_RETRY_TIMESTAMP = NULL,
-                    ERROR_MESSAGE = NULL
+                    ERROR_MESSAGE = NULL,
+                    LAST_MODIFIED_DATE = CURRENT_TIMESTAMP
                 WHERE FILE_ID IN ({placeholders})
                 AND STATUS = 'FAILED'
+                AND IS_LATEST_VERSION = 'Y'
             """
 
             params = {f"id{i}": file_id for i, file_id in enumerate(file_ids)}
 
         else:
-            # Reset all failed downloads with less than 3 retries
+            # Reset all failed downloads
             query = """
                 UPDATE PDF_DOWNLOAD_DMS_CLAIMS 
                 SET STATUS = 'PENDING',
-                    RETRY_COUNT = 0,
-                    LAST_RETRY_TIMESTAMP = NULL
+                    ERROR_MESSAGE = NULL,
+                    LAST_MODIFIED_DATE = CURRENT_TIMESTAMP
                 WHERE STATUS = 'FAILED' 
-                AND (RETRY_COUNT < 3 OR RETRY_COUNT IS NULL)
+                AND IS_LATEST_VERSION = 'Y'
             """
             params = {}
 
@@ -292,6 +448,13 @@ def reset_failed_for_retry(connection, file_ids=None):
         cursor.close()
 
         print(f"✅ Reset {updated_count} failed downloads for retry")
+
+        # Update claim attachment status for affected claims
+        if updated_count > 0:
+            print("🔄 Updating claim attachment statuses...")
+            # This would need to call your db_handler function to recalculate claim statuses
+            # For now, just print a reminder
+            print("💡 Consider running the download process to pick up the reset files")
 
     except Exception as e:
         print(f"❌ Reset failed: {e}")
@@ -314,7 +477,7 @@ def export_statistics(connection, output_file=None):
             f.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
             f.write("=" * 60 + "\n\n")
 
-            # Overall statistics
+            # Overall download statistics
             stats_query = """
                 SELECT 
                     STATUS,
@@ -323,6 +486,7 @@ def export_statistics(connection, output_file=None):
                     MIN(DOWNLOAD_TIMESTAMP) as FIRST_DOWNLOAD,
                     MAX(DOWNLOAD_TIMESTAMP) as LAST_DOWNLOAD
                 FROM PDF_DOWNLOAD_DMS_CLAIMS 
+                WHERE IS_LATEST_VERSION = 'Y'
                 GROUP BY STATUS
                 ORDER BY COUNT DESC
             """
@@ -332,12 +496,39 @@ def export_statistics(connection, output_file=None):
             results = cursor.fetchall()
             cursor.close()
 
-            f.write("Overall Statistics:\n")
-            f.write("-" * 20 + "\n")
+            f.write("Download Statistics (Latest Versions Only):\n")
+            f.write("-" * 45 + "\n")
             for row in results:
                 f.write(f"Status: {row[0]}\n")
                 f.write(f"  Count: {row[1]} ({row[2]}%)\n")
                 f.write(f"  Period: {row[3]} to {row[4]}\n\n")
+
+            # Claim-level statistics
+            claim_stats_query = """
+                SELECT 
+                    ATTACHMENT_STATUS,
+                    AUDIT_STATUS,
+                    COUNT(*) as COUNT,
+                    AVG(TOTAL_FILES_COUNT) as AVG_FILES,
+                    SUM(TOTAL_FILES_COUNT) as TOTAL_FILES,
+                    SUM(DOWNLOADED_FILES_COUNT) as TOTAL_DOWNLOADED
+                FROM CLAIM_STATUS
+                GROUP BY ATTACHMENT_STATUS, AUDIT_STATUS
+                ORDER BY ATTACHMENT_STATUS, AUDIT_STATUS
+            """
+
+            cursor = connection.cursor()
+            cursor.execute(claim_stats_query)
+            results = cursor.fetchall()
+            cursor.close()
+
+            f.write("\nClaim Status Statistics:\n")
+            f.write("-" * 25 + "\n")
+            for row in results:
+                f.write(f"Attachment: {row[0]}, Audit: {row[1]}\n")
+                f.write(f"  Claims: {row[2]}\n")
+                f.write(f"  Avg Files per Claim: {row[3]:.1f}\n")
+                f.write(f"  Total Files: {row[4]}, Downloaded: {row[5]}\n\n")
 
             # Daily breakdown for last 30 days
             daily_query = """
@@ -347,6 +538,7 @@ def export_statistics(connection, output_file=None):
                     COUNT(*) as COUNT
                 FROM PDF_DOWNLOAD_DMS_CLAIMS 
                 WHERE DOWNLOAD_TIMESTAMP >= SYSDATE - 30
+                AND IS_LATEST_VERSION = 'Y'
                 GROUP BY TO_CHAR(DOWNLOAD_TIMESTAMP, 'YYYY-MM-DD'), STATUS
                 ORDER BY DOWNLOAD_DATE DESC, STATUS
             """
@@ -374,12 +566,23 @@ def main():
         "--recent", type=int, default=24, help="Show recent activity (hours)"
     )
     parser.add_argument("--failed", action="store_true", help="Show failed downloads")
+    parser.add_argument("--claims", action="store_true", help="Show claim summary")
+    parser.add_argument(
+        "--problems", action="store_true", help="Show problematic claims"
+    )
     parser.add_argument("--cleanup", type=int, help="Cleanup old failed records (days)")
     parser.add_argument(
         "--reset-failed", action="store_true", help="Reset failed downloads for retry"
     )
     parser.add_argument("--export", type=str, help="Export statistics to file")
     parser.add_argument("--all", action="store_true", help="Show all information")
+    parser.add_argument(
+        "--env",
+        type=str,
+        choices=["local", "uat", "prod"],
+        default="local",
+        help="Environment mode",
+    )
 
     args = parser.parse_args()
 
@@ -388,9 +591,12 @@ def main():
         parser.print_help()
         return
 
+    # Set environment mode
+    db_handler.set_environment_mode(args.env)
+
     # Connect to database
     try:
-        connection = db_handler.get_db_connection()
+        connection = db_handler.get_bgate_db_connection()
         if not connection:
             print("❌ Failed to connect to database")
             return
@@ -398,6 +604,7 @@ def main():
         print(
             f"🚀 PDF Download Service Monitor - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
         )
+        print(f"Environment: {args.env}")
 
         if args.all or args.health:
             check_service_health(connection)
@@ -407,6 +614,12 @@ def main():
 
         if args.all or args.failed:
             show_failed_downloads(connection)
+
+        if args.all or args.claims:
+            show_claim_summary(connection)
+
+        if args.all or args.problems:
+            show_problematic_claims(connection)
 
         if args.cleanup:
             cleanup_old_records(connection, args.cleanup)
