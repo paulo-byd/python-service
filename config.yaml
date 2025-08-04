@@ -3,15 +3,17 @@
 # PDF Download settings
 download:
   base_url: "https://sadcsapi.bydauto.com/file/download?fileUrl="
-  storage_path: "/mnt/sdb/bgate/pdf-claims/"  # Production path
-  # storage_path: "./pdf-claims/"  # Local test path
+  # storage_path: "/mnt/sdb/bgate/pdf-claims/"  # Production path
+  storage_path: "./pdf-claims/"  # Local test path
   
   # Download behavior settings
   timeout_seconds: 60
   retry_attempts: 3
   retry_delay_seconds: 5
-  delay_between_downloads: 1  # seconds between file downloads
-  delay_between_claims: 2     # seconds between processing different claims
+  
+  # Rate limiting to prevent API overload
+  delay_between_downloads: 0.5  # seconds between file downloads (0.5 = 500ms)
+  delay_between_claims: 0       # seconds between processing different claims
 
 # Database connection pool settings
 database:
@@ -60,12 +62,17 @@ api:
     APP_ID: "791565299"
     SECRET_KEY: "1a0fe9add8e3304fb6195d37f3b313bf1ad766d455706ade26f79018c685beed"
   
-  # Rate limiting
+  # Rate limiting and connection management
   requests_per_minute: 60
   
   # Connection settings
   verify_ssl: true
   allow_redirects: true
+  
+  # Advanced rate limiting (for poor APIs)
+  enable_adaptive_delay: false  # Automatically adjust delay based on error rates
+  max_concurrent_requests: 4    # Maximum concurrent requests (for parallel mode)
+  delay_on_error_multiplier: 2.0  # Multiply delay by this factor when errors occur
 
 # Error handling
 error_handling:

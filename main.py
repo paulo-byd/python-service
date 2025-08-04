@@ -204,6 +204,13 @@ def download_single_file(row, config):
         file_id, row["CREATE_DATE"], claim_id, config
     )
 
+    # Apply delay between downloads if configured (for parallel processing)
+    base_delay = config.get("download", {}).get("delay_between_downloads", 0)
+    if base_delay > 0:
+        # Use adaptive delay if enabled
+        logger.debug(f"⏱️  Worker thread waiting {base_delay:.2f}s after FILE_ID {file_id}...")
+        time.sleep(base_delay)
+
     return (row.name, file_id, claim_id, local_path, error, download_time, row)
 
 
@@ -240,7 +247,7 @@ def run_download_process_sequential():
     )
     config = db_handler.load_config()
 
-    # Clear previous performance data
+    # Clear previous performance data and reset error tracking
     with download_times_lock:
         download_times.clear()
 
@@ -256,6 +263,11 @@ def run_download_process_sequential():
         failed_downloads = 0
 
         cycle_start_time = time.time()
+
+        # Get delay configuration
+        delay_between_downloads = config.get("download", {}).get("delay_between_downloads", 0)
+        if delay_between_downloads > 0:
+            logger.info(f"⏱️  Using delay between downloads: {delay_between_downloads} seconds")
 
         for index, row in files_to_download_df.iterrows():
             file_id = row["FILE_ID"]
@@ -294,8 +306,10 @@ def run_download_process_sequential():
                 failed_downloads += 1
 
             # Add delay between downloads if configured
-            if config.get("download", {}).get("delay_between_downloads", 0) > 0:
-                time.sleep(config["download"]["delay_between_downloads"])
+            if delay_between_downloads > 0:
+                # Use adaptive delay if enabled
+                logger.debug(f"⏱️  Waiting {delay_between_downloads:.2f}s before next download...")
+                time.sleep(delay_between_downloads)
 
         cycle_end_time = time.time()
         total_cycle_time = cycle_end_time - cycle_start_time
@@ -321,7 +335,7 @@ def run_download_process_parallel(max_workers=4):
     )
     config = db_handler.load_config()
 
-    # Clear previous performance data
+    # Clear previous performance data and reset error tracking
     with download_times_lock:
         download_times.clear()
 
@@ -337,6 +351,13 @@ def run_download_process_parallel(max_workers=4):
         failed_downloads = 0
 
         cycle_start_time = time.time()
+
+        # Get delay configuration
+        delay_between_downloads = config.get("download", {}).get("delay_between_downloads", 0)
+        
+        if delay_between_downloads > 0:
+            logger.info(f"⏱️  Using delay between downloads: {delay_between_downloads} seconds")
+            logger.info(f"⚠️  Note: In parallel mode, delays are applied per worker thread")
 
         # Use ThreadPoolExecutor for parallel downloads
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
