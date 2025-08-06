@@ -1,8 +1,10 @@
-#!/usr/bin/env python3
 """
-Mock Matching Functions for PDF Invoice Matching
-This module contains the mock implementation of the invoice matching logic
-that will be replaced with real implementation later.
+Mock Matching Functions for PDF Invoice Matching - TEST VERSION
+This module contains the mock implementation with RANDOM results for testing.
+
+IMPORTANT: This version randomly assigns COMPLETE/REJECTED for frontend testing.
+When the real PDF processing is ready, replace this with the production version
+and reset all AUDIT_STATUS to NULL to reprocess.
 """
 
 import json
@@ -10,8 +12,14 @@ import random
 import logging
 from pathlib import Path
 from typing import Dict, List, Tuple, Any
+import pandas as pd
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
+
+# TEST MODE FLAG - Set this to False when you have the real PDF processor
+TEST_MODE_RANDOM = True
+RANDOM_SUCCESS_RATE = 0.7  # 70% will be marked as COMPLETE, 30% as REJECTED
 
 
 def match_invoices_with_dms_estimates(
@@ -22,9 +30,9 @@ def match_invoices_with_dms_estimates(
     config: Dict | None = None,
 ) -> Tuple[bool, str, Dict[str, Any]]:
     """
-    Mock function to match invoice amounts from PDF processing with DMS estimates.
+    TEST VERSION - Returns random results for frontend testing.
 
-    In the future, this will:
+    In production, this will:
     1. Extract financial information from the processing_results
     2. Compare LABOUR_AMOUNT and PART_AMOUNT from PDFs with DMS values
     3. Return match status and detailed breakdown
@@ -38,9 +46,6 @@ def match_invoices_with_dms_estimates(
 
     Returns:
         Tuple[bool, str, Dict]: (match_success, reason, details)
-            - match_success: True if amounts match, False otherwise
-            - reason: Human-readable reason for the result
-            - details: Dictionary with detailed breakdown of the matching
     """
 
     logger.info(f"🔍 Starting invoice matching for CLAIM_ID {claim_id}")
@@ -48,74 +53,139 @@ def match_invoices_with_dms_estimates(
     logger.info(f"   DMS Part Amount: {part_amount_dms}")
     logger.info(f"   Processing results files: {len(processing_results)}")
 
-    # Mock implementation - simulate different scenarios
+    if TEST_MODE_RANDOM:
+        logger.warning(
+            f"⚠️ TEST MODE ACTIVE - Using random results for CLAIM_ID {claim_id}"
+        )
 
     # Calculate total DMS amount
     total_dms_amount = (labour_amount_dms or 0) + (part_amount_dms or 0)
 
-    # Mock: Extract amounts from processing results
-    # In reality, this would parse the actual PDF content
-    mock_extracted_amounts = _mock_extract_amounts_from_pdfs(
-        claim_id, processing_results, total_dms_amount
-    )
+    # TEST MODE: Generate random but deterministic results
+    if TEST_MODE_RANDOM:
+        # Use claim_id as seed for consistent results per claim
+        random.seed(claim_id)
 
-    # Get tolerance from config
-    tolerance_pct = 0.0  # Default to exact match
-    if config and "audit_matching" in config:
-        tolerance_pct = config["audit_matching"].get("tolerance_percentage", 0.0)
+        # Randomly decide if this claim passes or fails
+        match_success = random.random() < RANDOM_SUCCESS_RATE
 
-    # Calculate tolerance
-    tolerance = (
-        total_dms_amount * (tolerance_pct / 100.0) if total_dms_amount > 0 else 0
-    )
+        # Generate realistic-looking extracted amounts
+        if match_success:
+            # For successful matches, generate amounts close to DMS values
+            variation = random.uniform(0.98, 1.02)  # ±2% variation
+            labour_ratio = random.uniform(0.3, 0.7)
 
-    # Compare amounts
-    labour_match = _amounts_match(
-        labour_amount_dms or 0,
-        mock_extracted_amounts["labour_amount"],
-        tolerance / 2,  # Split tolerance between labour and parts
-    )
+            extracted_labour = total_dms_amount * labour_ratio * variation
+            extracted_part = total_dms_amount * (1 - labour_ratio) * variation
 
-    part_match = _amounts_match(
-        part_amount_dms or 0, mock_extracted_amounts["part_amount"], tolerance / 2
-    )
+            reason = f"✅ TEST MODE: Amounts match within tolerance (random success)"
 
-    overall_match = labour_match and part_match
+        else:
+            # For failed matches, generate significantly different amounts
+            variation = random.choice(
+                [
+                    random.uniform(0.5, 0.8),  # 20-50% less
+                    random.uniform(1.2, 1.5),  # 20-50% more
+                ]
+            )
+            labour_ratio = random.uniform(0.2, 0.8)
+
+            extracted_labour = total_dms_amount * labour_ratio * variation
+            extracted_part = total_dms_amount * (1 - labour_ratio) * variation
+
+            # Generate specific failure reasons
+            failure_reasons = [
+                "Labour amount mismatch",
+                "Parts amount mismatch",
+                "Total amount exceeds threshold",
+                "Missing invoice data",
+                "Multiple discrepancies found",
+            ]
+            specific_reason = random.choice(failure_reasons)
+            reason = f"❌ TEST MODE: {specific_reason} (random failure)"
+
+        # Round amounts for realism
+        extracted_labour = round(extracted_labour, 2)
+        extracted_part = round(extracted_part, 2)
+
+    else:
+        # Production mode - use the original mock logic
+        mock_extracted_amounts = _mock_extract_amounts_from_pdfs(
+            claim_id, processing_results, total_dms_amount
+        )
+        extracted_labour = mock_extracted_amounts["labour_amount"]
+        extracted_part = mock_extracted_amounts["part_amount"]
+
+        # Get tolerance from config
+        tolerance_pct = 0.0
+        if config and "audit_matching" in config:
+            tolerance_pct = config["audit_matching"].get("tolerance_percentage", 0.0)
+
+        tolerance = (
+            total_dms_amount * (tolerance_pct / 100.0) if total_dms_amount > 0 else 0
+        )
+
+        # Compare amounts
+        labour_match = _amounts_match(
+            labour_amount_dms or 0,
+            extracted_labour,
+            tolerance / 2,
+        )
+
+        part_match = _amounts_match(part_amount_dms or 0, extracted_part, tolerance / 2)
+
+        match_success = labour_match and part_match
+
+        # Generate reason
+        if match_success:
+            reason = f"✅ Amounts match within tolerance ({tolerance_pct}%)"
+        else:
+            mismatches = []
+            if not labour_match:
+                mismatches.append("labour")
+            if not part_match:
+                mismatches.append("parts")
+            reason = f"❌ Amount mismatch in: {', '.join(mismatches)}"
 
     # Create detailed results
     details = {
+        "test_mode": TEST_MODE_RANDOM,
         "dms_amounts": {
             "labour": labour_amount_dms,
             "parts": part_amount_dms,
             "total": total_dms_amount,
         },
-        "extracted_amounts": mock_extracted_amounts,
+        "extracted_amounts": {
+            "labour_amount": extracted_labour,
+            "part_amount": extracted_part,
+            "total_amount": extracted_labour + extracted_part,
+            "extraction_confidence": random.uniform(0.85, 0.99)
+            if TEST_MODE_RANDOM
+            else 0.95,
+            "files_processed": len(processing_results),
+        },
         "matching_results": {
-            "labour_match": labour_match,
-            "part_match": part_match,
-            "overall_match": overall_match,
-            "tolerance_used": tolerance_pct,
+            "labour_match": abs((labour_amount_dms or 0) - extracted_labour) < 10,
+            "part_match": abs((part_amount_dms or 0) - extracted_part) < 10,
+            "overall_match": match_success,
+            "tolerance_used": config.get("audit_matching", {}).get(
+                "tolerance_percentage", 0.0
+            )
+            if config
+            else 0.0,
         },
         "processed_files": list(processing_results.keys()),
-        "processing_timestamp": pd.Timestamp.now().isoformat(),
+        "processing_timestamp": datetime.now().isoformat(),
     }
-
-    # TODO: Add information from the match in the backend
-
-    # Generate reason
-    if overall_match:
-        reason = f"✅ Amounts match within tolerance ({tolerance_pct}%)"
-    else:
-        mismatches = []
-        if not labour_match:
-            mismatches.append("labour")
-        if not part_match:
-            mismatches.append("parts")
-        reason = f"❌ Amount mismatch in: {', '.join(mismatches)}"
 
     logger.info(f"🔍 Matching result for CLAIM_ID {claim_id}: {reason}")
 
-    return overall_match, reason, details
+    if TEST_MODE_RANDOM:
+        logger.info(
+            f"📊 TEST RESULT - Success: {match_success}, DMS Total: {total_dms_amount:.2f}, Extracted Total: {(extracted_labour + extracted_part):.2f}"
+        )
+
+    return match_success, reason, details
 
 
 def _mock_extract_amounts_from_pdfs(
@@ -123,14 +193,6 @@ def _mock_extract_amounts_from_pdfs(
 ) -> Dict[str, float]:
     """
     Mock function to simulate extracting financial amounts from PDF processing results.
-
-    In reality, this would:
-    1. Parse the processing_results to extract text/structured data from PDFs
-    2. Use regex/NLP to find labour and part amounts
-    3. Handle multiple invoices and sum them up
-    4. Deal with different PDF formats and languages
-
-    For now, it generates realistic mock data based on the target amounts.
     """
 
     # Simulate different scenarios based on claim_id
@@ -149,7 +211,7 @@ def _mock_extract_amounts_from_pdfs(
 
     if scenario == "exact_match":
         # Perfect match
-        labour_ratio = random.uniform(0.3, 0.7)  # Labour typically 30-70% of total
+        labour_ratio = random.uniform(0.3, 0.7)
         labour_amount = target_total * labour_ratio
         part_amount = target_total - labour_amount
 
@@ -202,14 +264,6 @@ def _mock_extract_amounts_from_pdfs(
 def _amounts_match(amount1: float, amount2: float, tolerance: float = 0.0) -> bool:
     """
     Check if two amounts match within the specified tolerance.
-
-    Args:
-        amount1 (float): First amount
-        amount2 (float): Second amount
-        tolerance (float): Absolute tolerance allowed
-
-    Returns:
-        bool: True if amounts match within tolerance
     """
     if amount1 == 0 and amount2 == 0:
         return True
@@ -223,20 +277,18 @@ def batch_match_claims(
 ) -> Dict[int, Dict]:
     """
     Process multiple claims for invoice matching in batch.
-
-    Args:
-        claim_data_list (List[Dict]): List of claim dictionaries with keys:
-            - CLAIM_ID, LABOUR_AMOUNT_DMS, PART_AMOUNT_DMS
-        processing_results_dict (Dict): Dictionary mapping claim_id to processing results
-        config (Dict): Configuration dictionary
-
-    Returns:
-        Dict[int, Dict]: Dictionary mapping claim_id to matching results
+    TEST VERSION - Produces random results for testing.
     """
 
     results = {}
 
     logger.info(f"🔍 Starting batch invoice matching for {len(claim_data_list)} claims")
+
+    if TEST_MODE_RANDOM:
+        logger.warning(
+            f"⚠️ TEST MODE: Generating random audit results for frontend testing"
+        )
+        logger.warning(f"⚠️ Success rate set to {RANDOM_SUCCESS_RATE * 100}%")
 
     for claim_data in claim_data_list:
         claim_id = claim_data["CLAIM_ID"]
@@ -251,7 +303,10 @@ def batch_match_claims(
             results[claim_id] = {
                 "match_success": False,
                 "reason": "No processing results available",
-                "details": {"error": "No processing results found"},
+                "details": {
+                    "error": "No processing results found",
+                    "test_mode": TEST_MODE_RANDOM,
+                },
             }
             continue
 
@@ -272,20 +327,28 @@ def batch_match_claims(
             results[claim_id] = {
                 "match_success": False,
                 "reason": f"Processing error: {str(e)}",
-                "details": {"error": str(e)},
+                "details": {"error": str(e), "test_mode": TEST_MODE_RANDOM},
             }
 
     # Log summary
     successful_matches = sum(1 for r in results.values() if r["match_success"])
+    failed_matches = len(results) - successful_matches
+
+    logger.info(f"🔍 Batch matching completed:")
     logger.info(
-        f"🔍 Batch matching completed: {successful_matches}/{len(claim_data_list)} successful matches"
+        f"   ✅ Successful: {successful_matches} ({successful_matches / len(claim_data_list) * 100:.1f}%)"
+    )
+    logger.info(
+        f"   ❌ Failed: {failed_matches} ({failed_matches / len(claim_data_list) * 100:.1f}%)"
     )
 
+    if TEST_MODE_RANDOM:
+        logger.warning("⚠️ Remember: These are TEST RESULTS with random data!")
+        logger.info(
+            "💡 To reset for production: UPDATE CLAIM_STATUS SET AUDIT_STATUS = NULL"
+        )
+
     return results
-
-
-# Import pandas for timestamp functionality
-import pandas as pd
 
 
 def get_mock_processing_results_for_claim(
@@ -293,14 +356,7 @@ def get_mock_processing_results_for_claim(
 ) -> Dict[str, Any]:
     """
     Generate mock processing results for a specific claim's PDF files.
-    This simulates what run_batch_processing() would return for this claim.
-
-    Args:
-        claim_id (int): The claim ID
-        file_paths (List[str]): List of PDF file paths for this claim
-
-    Returns:
-        Dict[str, Any]: Mock processing results in the same format as run_batch_processing()
+    Enhanced for test mode to provide more realistic data.
     """
 
     results = {}
@@ -318,10 +374,13 @@ def get_mock_processing_results_for_claim(
         results[key] = {
             "file_name": file_path_obj.name,
             "claim_id": claim_id,
-            "processing_status": "success",
+            "processing_status": "success"
+            if random.random() > 0.1
+            else "partial",  # 90% success
             "extracted_text_length": random.randint(500, 5000),
             "pages_processed": random.randint(1, 10),
             "confidence_score": random.uniform(0.7, 0.95),
+            "test_mode": TEST_MODE_RANDOM,
         }
 
     return results
@@ -330,12 +389,6 @@ def get_mock_processing_results_for_claim(
 def validate_matching_config(config: Dict) -> bool:
     """
     Validate the audit matching configuration.
-
-    Args:
-        config (Dict): Configuration dictionary
-
-    Returns:
-        bool: True if configuration is valid
     """
 
     if not config:
@@ -374,12 +427,7 @@ def validate_matching_config(config: Dict) -> bool:
 def generate_matching_report(matching_results: Dict[int, Dict]) -> str:
     """
     Generate a human-readable report of matching results.
-
-    Args:
-        matching_results (Dict[int, Dict]): Results from batch_match_claims()
-
-    Returns:
-        str: Formatted report
+    Enhanced for test mode to clearly indicate test status.
     """
 
     if not matching_results:
@@ -391,14 +439,28 @@ def generate_matching_report(matching_results: Dict[int, Dict]) -> str:
 
     report_lines = [
         "📊 INVOICE MATCHING REPORT",
-        "=" * 50,
-        f"Total Claims Processed: {total_claims}",
-        f"Successful Matches: {successful_matches} ({successful_matches / total_claims * 100:.1f}%)",
-        f"Failed Matches: {failed_matches} ({failed_matches / total_claims * 100:.1f}%)",
-        "",
-        "DETAILED RESULTS:",
-        "-" * 30,
     ]
+
+    if TEST_MODE_RANDOM:
+        report_lines.extend(
+            [
+                "⚠️  TEST MODE ACTIVE - RANDOM RESULTS ⚠️",
+                "=" * 50,
+            ]
+        )
+    else:
+        report_lines.append("=" * 50)
+
+    report_lines.extend(
+        [
+            f"Total Claims Processed: {total_claims}",
+            f"Successful Matches: {successful_matches} ({successful_matches / total_claims * 100:.1f}%)",
+            f"Failed Matches: {failed_matches} ({failed_matches / total_claims * 100:.1f}%)",
+            "",
+            "DETAILED RESULTS:",
+            "-" * 30,
+        ]
+    )
 
     # Sort by claim_id for consistent reporting
     for claim_id in sorted(matching_results.keys()):
@@ -420,46 +482,117 @@ def generate_matching_report(matching_results: Dict[int, Dict]) -> str:
                     f"    PDF: Labour={extracted.get('labour_amount', 0):.2f}, Parts={extracted.get('part_amount', 0):.2f}"
                 )
 
+    if TEST_MODE_RANDOM:
+        report_lines.extend(
+            [
+                "",
+                "🔄 TO RESET FOR PRODUCTION:",
+                "1. Set TEST_MODE_RANDOM = False in matching_functions.py",
+                "2. Run: UPDATE CLAIM_STATUS SET AUDIT_STATUS = NULL",
+                "3. Restart the service to reprocess all claims",
+            ]
+        )
+
     return "\n".join(report_lines)
+
+
+# Test helper function to reset audit status for retesting
+def reset_audit_status_for_testing(claim_ids: List[int] = None):
+    """
+    Helper function to reset audit status for testing purposes.
+    This should be called when you want to retest the matching logic.
+
+    Args:
+        claim_ids: List of claim IDs to reset, or None to reset all
+    """
+    try:
+        import db_handler
+
+        with db_handler.DatabaseConnection("bgate") as connection:
+            cursor = connection.cursor()
+
+            if claim_ids:
+                placeholders = ",".join([f":id{i}" for i in range(len(claim_ids))])
+                query = f"""
+                    UPDATE CLAIM_STATUS 
+                    SET AUDIT_STATUS = NULL,
+                        LAST_MODIFIED_DATE = CURRENT_TIMESTAMP
+                    WHERE CLAIM_ID IN ({placeholders})
+                """
+                params = {f"id{i}": claim_id for i, claim_id in enumerate(claim_ids)}
+                cursor.execute(query, params)
+            else:
+                query = """
+                    UPDATE CLAIM_STATUS 
+                    SET AUDIT_STATUS = NULL,
+                        LAST_MODIFIED_DATE = CURRENT_TIMESTAMP
+                    WHERE AUDIT_STATUS IS NOT NULL
+                """
+                cursor.execute(query)
+
+            reset_count = cursor.rowcount
+            connection.commit()
+            cursor.close()
+
+            logger.info(f"✅ Reset audit status for {reset_count} claims")
+            return reset_count
+
+    except Exception as e:
+        logger.error(f"❌ Error resetting audit status: {e}")
+        return 0
 
 
 if __name__ == "__main__":
     """Test the mock matching functions"""
 
+    print(f"🧪 Testing Matching Functions - TEST MODE: {TEST_MODE_RANDOM}")
+    print(f"Success Rate: {RANDOM_SUCCESS_RATE * 100}%")
+    print("-" * 50)
+
     # Test data
     test_claim_data = [
         {"CLAIM_ID": 12345, "LABOUR_AMOUNT_DMS": 1500.00, "PART_AMOUNT_DMS": 2500.00},
         {"CLAIM_ID": 12346, "LABOUR_AMOUNT_DMS": 800.00, "PART_AMOUNT_DMS": 1200.00},
+        {"CLAIM_ID": 12347, "LABOUR_AMOUNT_DMS": 2000.00, "PART_AMOUNT_DMS": 3000.00},
+        {"CLAIM_ID": 12348, "LABOUR_AMOUNT_DMS": 500.00, "PART_AMOUNT_DMS": 750.00},
+        {"CLAIM_ID": 12349, "LABOUR_AMOUNT_DMS": 1200.00, "PART_AMOUNT_DMS": 1800.00},
     ]
 
     # Mock processing results
-    test_processing_results = {
-        12345: {
-            "hash1_<invoice1.pdf>": {"file_name": "invoice1.pdf"},
-            "hash2_<invoice2.pdf>": {"file_name": "invoice2.pdf"},
-        },
-        12346: {"hash3_<invoice3.pdf>": {"file_name": "invoice3.pdf"}},
-    }
+    test_processing_results = {}
+    for claim in test_claim_data:
+        claim_id = claim["CLAIM_ID"]
+        test_processing_results[claim_id] = {
+            f"hash{claim_id}_<invoice_{claim_id}.pdf>": {
+                "file_name": f"invoice_{claim_id}.pdf"
+            },
+            f"hash{claim_id}_2<receipt_{claim_id}.pdf>": {
+                "file_name": f"receipt_{claim_id}.pdf"
+            },
+        }
 
     # Test configuration
     test_config = {
         "audit_matching": {
             "max_claims_per_batch": 20,
             "exact_amount_match": True,
-            "tolerance_percentage": 0.0,
+            "tolerance_percentage": 2.0,  # 2% tolerance
         }
     }
 
     # Run tests
-    print("Testing mock matching functions...")
-
-    # Validate config
+    print("Testing configuration validation...")
     if validate_matching_config(test_config):
         print("✅ Configuration validation passed")
 
-    # Test batch matching
+    print("\nTesting batch matching...")
     results = batch_match_claims(test_claim_data, test_processing_results, test_config)
 
     # Generate report
-    report = generate_matching_report(results)
-    print("\n" + report)
+    print("\n" + generate_matching_report(results))
+
+    # Show individual results
+    print("\n📋 Individual Results:")
+    for claim_id, result in results.items():
+        status = "PASS" if result["match_success"] else "FAIL"
+        print(f"  CLAIM {claim_id}: {status} - {result['reason']}")

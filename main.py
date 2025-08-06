@@ -578,6 +578,8 @@ def process_claims_batch_pdfs(max_claims=None):
                 claim_processing_results = json.loads(processing_results_json)
                 processing_results[claim_id] = claim_processing_results
 
+                # TODO: HERE WE NEED TO ADD THE RESULT FROM THE PDF DATA TO THE DATABASE (LABOUR_AMOUNT_PROCESSING and PART_AMOUNT_PROCESSING )
+
                 # Mark claim as ready for audit
                 db_handler.update_audit_status(claim_id, "PENDING")
 
@@ -848,6 +850,32 @@ def run_batch_audit_matching_job():
         logger.error(f"🚨 Critical error in scheduled audit matching: {e}")
 
 
+def auto_recover_failed_downloads():
+    """Automatically retry failed downloads after delay"""
+    try:
+        with db_handler.DatabaseConnection("bgate") as conn:
+            cursor = conn.cursor()
+            # Reset old failed downloads for retry
+            cursor.execute("""
+                UPDATE PDF_DOWNLOAD_DMS_CLAIMS
+                SET STATUS = 'PENDING',
+                    ERROR_MESSAGE = ERROR_MESSAGE || ' [Auto-retry]'
+                WHERE STATUS = 'FAILED'
+                AND IS_LATEST_VERSION = 'Y'
+                AND DOWNLOAD_TIMESTAMP < SYSDATE - INTERVAL '1' HOUR
+                AND DOWNLOAD_TIMESTAMP > SYSDATE - INTERVAL '24' HOUR
+            """)
+
+            reset_count = cursor.rowcount
+            conn.commit()
+
+            if reset_count > 0:
+                logger.info(f"Auto-recovery: Reset {reset_count} failed downloads")
+
+    except Exception as e:
+        logger.error(f"Auto-recovery failed: {e}")
+
+
 if __name__ == "__main__":
     # Validate config before starting
     try:
@@ -983,6 +1011,11 @@ if __name__ == "__main__":
         "date",
         run_date=datetime.now() + timedelta(minutes=5),
         id="initial_audit_matching",
+    )
+
+    # Retry failed download logic
+    scheduler.add_job(
+        auto_recover_failed_downloads, "interval", hours=2, id="auto_recovery"
     )
 
     logger.info("🕒 Scheduler started.")
