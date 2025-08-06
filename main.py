@@ -139,7 +139,9 @@ def download_pdf(file_id, create_date, claim_id, config):
                     f"✅ Successfully saved: {local_filepath} ({file_size} bytes)"
                 )
                 logger.info(f"📊 PERFORMANCE - FILE_ID {file_id}:")
-                logger.info(f"   Total time: {total_download_time:.3f}s; Network time (total): {network_time:.3f}s; File write time: {file_write_time:.3f}s")
+                logger.info(
+                    f"   Total time: {total_download_time:.3f}s; Network time (total): {network_time:.3f}s; File write time: {file_write_time:.3f}s"
+                )
                 logger.info(
                     f"   Download speed: {file_size / network_time / 1024:.2f} KB/s"
                 )
@@ -208,7 +210,9 @@ def download_single_file(row, config):
     base_delay = config.get("download", {}).get("delay_between_downloads", 0)
     if base_delay > 0:
         # Use adaptive delay if enabled
-        logger.debug(f"⏱️  Worker thread waiting {base_delay:.2f}s after FILE_ID {file_id}...")
+        logger.debug(
+            f"⏱️  Worker thread waiting {base_delay:.2f}s after FILE_ID {file_id}..."
+        )
         time.sleep(base_delay)
 
     return (row.name, file_id, claim_id, local_path, error, download_time, row)
@@ -265,9 +269,13 @@ def run_download_process_sequential():
         cycle_start_time = time.time()
 
         # Get delay configuration
-        delay_between_downloads = config.get("download", {}).get("delay_between_downloads", 0)
+        delay_between_downloads = config.get("download", {}).get(
+            "delay_between_downloads", 0
+        )
         if delay_between_downloads > 0:
-            logger.info(f"⏱️  Using delay between downloads: {delay_between_downloads} seconds")
+            logger.info(
+                f"⏱️  Using delay between downloads: {delay_between_downloads} seconds"
+            )
 
         for index, row in files_to_download_df.iterrows():
             file_id = row["FILE_ID"]
@@ -308,7 +316,9 @@ def run_download_process_sequential():
             # Add delay between downloads if configured
             if delay_between_downloads > 0:
                 # Use adaptive delay if enabled
-                logger.debug(f"⏱️  Waiting {delay_between_downloads:.2f}s before next download...")
+                logger.debug(
+                    f"⏱️  Waiting {delay_between_downloads:.2f}s before next download..."
+                )
                 time.sleep(delay_between_downloads)
 
         cycle_end_time = time.time()
@@ -353,11 +363,17 @@ def run_download_process_parallel(max_workers=4):
         cycle_start_time = time.time()
 
         # Get delay configuration
-        delay_between_downloads = config.get("download", {}).get("delay_between_downloads", 0)
-        
+        delay_between_downloads = config.get("download", {}).get(
+            "delay_between_downloads", 0
+        )
+
         if delay_between_downloads > 0:
-            logger.info(f"⏱️  Using delay between downloads: {delay_between_downloads} seconds")
-            logger.info(f"⚠️  Note: In parallel mode, delays are applied per worker thread")
+            logger.info(
+                f"⏱️  Using delay between downloads: {delay_between_downloads} seconds"
+            )
+            logger.info(
+                f"⚠️  Note: In parallel mode, delays are applied per worker thread"
+            )
 
         # Use ThreadPoolExecutor for parallel downloads
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -446,7 +462,7 @@ def run_download_process():
     if auto_audit_enabled:
         logger.info("\n🔄 Auto-triggering audit matching after download completion...")
         try:
-            # First, run PDF processing for any newly completed claims
+            # First, run PDF processing for any new claims
             processing_results = process_claims_batch_pdfs()
 
             if processing_results:
@@ -832,30 +848,6 @@ def run_batch_audit_matching_job():
         logger.error(f"🚨 Critical error in scheduled audit matching: {e}")
 
 
-def run_legacy_batch_pdf_processing():
-    """
-    Legacy PDF processing function - kept for backward compatibility.
-    Use run_batch_pdf_processing() for new claim-based approach.
-    """
-    logger.info(
-        f"\n🎯 Starting legacy PDF processing at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-    )
-
-    try:
-        config = db_handler.load_config()
-        processing_results = process_unprocessed_pdfs(config)
-
-        if processing_results:
-            logger.info(
-                f"🎯 Legacy PDF processing completed successfully for {len(processing_results)} files"
-            )
-        else:
-            logger.info("🎯 Legacy PDF processing completed - no files processed")
-
-    except Exception as e:
-        logger.error(f"🚨 Critical error in legacy PDF processing: {e}")
-
-
 if __name__ == "__main__":
     # Validate config before starting
     try:
@@ -898,16 +890,16 @@ if __name__ == "__main__":
         try:
             db_handler.initialize_connection_pools(
                 min_connections=config.get("database", {}).get("min_connections", 2),
-                max_connections=config.get("database", {}).get("max_connections", 10)
+                max_connections=config.get("database", {}).get("max_connections", 10),
             )
             logger.info("✅ Database connection pools initialized successfully")
             # Verify pool status
             db_handler.get_pool_status()
-            
+
             # Test pool connectivity
             logger.info("Testing BGATE pool connectivity...")
             try:
-                with db_handler.DatabaseConnection('bgate') as test_conn:
+                with db_handler.DatabaseConnection("bgate") as test_conn:
                     cursor = test_conn.cursor()
                     cursor.execute("SELECT 1 FROM DUAL")
                     result = cursor.fetchone()
@@ -915,11 +907,11 @@ if __name__ == "__main__":
                     logger.info("✅ BGATE pool connectivity test successful")
             except Exception as test_error:
                 logger.error(f"❌ BGATE pool connectivity test failed: {test_error}")
-            
+
             # Test DMS direct connectivity
             logger.info("Testing DMS direct connectivity...")
             try:
-                with db_handler.DatabaseConnection('dms') as test_conn:
+                with db_handler.DatabaseConnection("dms") as test_conn:
                     cursor = test_conn.cursor()
                     cursor.execute("SELECT 1 FROM DUAL")
                     result = cursor.fetchone()
@@ -993,7 +985,7 @@ if __name__ == "__main__":
         id="initial_audit_matching",
     )
 
-    logger.info(f"🕒 Scheduler started.")
+    logger.info("🕒 Scheduler started.")
     logger.info(f"   - Downloads will run every {download_interval_hours} hours")
     logger.info(f"   - PDF processing will run every {pdf_processing_hours} hours")
     logger.info(f"   - Audit matching will run every {audit_matching_hours} hours")
