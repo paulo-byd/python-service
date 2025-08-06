@@ -15,6 +15,8 @@ from typing import Dict, List, Tuple, Any
 import pandas as pd
 from datetime import datetime
 
+import db_handler
+
 logger = logging.getLogger(__name__)
 
 # TEST MODE FLAG - Set this to False when you have the real PDF processor
@@ -31,6 +33,7 @@ def match_invoices_with_dms_estimates(
 ) -> Tuple[bool, str, Dict[str, Any]]:
     """
     TEST VERSION - Returns random results for frontend testing.
+    Updates LABOUR_AMOUNT_PROCESSING and PART_AMOUNT_PROCESSING in database.
 
     In production, this will:
     1. Extract financial information from the processing_results
@@ -69,29 +72,35 @@ def match_invoices_with_dms_estimates(
         # Randomly decide if this claim passes or fails
         match_success = random.random() < RANDOM_SUCCESS_RATE
 
-        # Generate realistic-looking extracted amounts
         if match_success:
-            # For successful matches, generate amounts close to DMS values
-            variation = random.uniform(0.98, 1.02)  # ±2% variation
-            labour_ratio = random.uniform(0.3, 0.7)
+            # SUCCESS: Use exact DMS amounts for processing amounts
+            extracted_labour = labour_amount_dms or 0
+            extracted_part = part_amount_dms or 0
 
-            extracted_labour = total_dms_amount * labour_ratio * variation
-            extracted_part = total_dms_amount * (1 - labour_ratio) * variation
+            reason = f"✅ TEST MODE: Amounts match exactly (random success)"
 
-            reason = f"✅ TEST MODE: Amounts match within tolerance (random success)"
+            logger.info(f"📊 SUCCESS - Setting processing amounts equal to DMS amounts")
 
         else:
-            # For failed matches, generate significantly different amounts
+            # FAILURE: Generate random different amounts
+            # Create significant variation for rejected claims
             variation = random.choice(
                 [
                     random.uniform(0.5, 0.8),  # 20-50% less
                     random.uniform(1.2, 1.5),  # 20-50% more
+                    random.uniform(0.3, 0.5),  # 50-70% less (major discrepancy)
                 ]
             )
+
+            # Randomize the labour/part split as well
             labour_ratio = random.uniform(0.2, 0.8)
 
             extracted_labour = total_dms_amount * labour_ratio * variation
             extracted_part = total_dms_amount * (1 - labour_ratio) * variation
+
+            # Round to 2 decimal places for realism
+            extracted_labour = round(extracted_labour, 2)
+            extracted_part = round(extracted_part, 2)
 
             # Generate specific failure reasons
             failure_reasons = [
@@ -104,9 +113,12 @@ def match_invoices_with_dms_estimates(
             specific_reason = random.choice(failure_reasons)
             reason = f"❌ TEST MODE: {specific_reason} (random failure)"
 
-        # Round amounts for realism
-        extracted_labour = round(extracted_labour, 2)
-        extracted_part = round(extracted_part, 2)
+            logger.info(
+                f"📊 FAILURE - Generated random processing amounts: Labour={extracted_labour:.2f}, Parts={extracted_part:.2f}"
+            )
+
+        # Update the database with processing amounts
+        db_handler.update_processing_amounts(claim_id, extracted_labour, extracted_part)
 
     else:
         # Production mode - use the original mock logic
@@ -147,6 +159,9 @@ def match_invoices_with_dms_estimates(
                 mismatches.append("parts")
             reason = f"❌ Amount mismatch in: {', '.join(mismatches)}"
 
+        # Update database with processing amounts (production mode)
+        db_handler.update_processing_amounts(claim_id, extracted_labour, extracted_part)
+
     # Create detailed results
     details = {
         "test_mode": TEST_MODE_RANDOM,
@@ -181,9 +196,11 @@ def match_invoices_with_dms_estimates(
     logger.info(f"🔍 Matching result for CLAIM_ID {claim_id}: {reason}")
 
     if TEST_MODE_RANDOM:
-        logger.info(
-            f"📊 TEST RESULT - Success: {match_success}, DMS Total: {total_dms_amount:.2f}, Extracted Total: {(extracted_labour + extracted_part):.2f}"
-        )
+        logger.info(f"📊 TEST RESULT - Success: {match_success}")
+        logger.info(f"   DMS Total: {total_dms_amount:.2f}")
+        logger.info(f"   Processing Total: {(extracted_labour + extracted_part):.2f}")
+        logger.info(f"   Updated LABOUR_AMOUNT_PROCESSING: {extracted_labour:.2f}")
+        logger.info(f"   Updated PART_AMOUNT_PROCESSING: {extracted_part:.2f}")
 
     return match_success, reason, details
 
@@ -277,7 +294,7 @@ def batch_match_claims(
 ) -> Dict[int, Dict]:
     """
     Process multiple claims for invoice matching in batch.
-    TEST VERSION - Produces random results for testing.
+    TEST VERSION - Produces random results for testing and updates processing amounts.
     """
 
     results = {}
@@ -289,6 +306,7 @@ def batch_match_claims(
             f"⚠️ TEST MODE: Generating random audit results for frontend testing"
         )
         logger.warning(f"⚠️ Success rate set to {RANDOM_SUCCESS_RATE * 100}%")
+        logger.warning(f"⚠️ Processing amounts will be updated in database")
 
     for claim_data in claim_data_list:
         claim_id = claim_data["CLAIM_ID"]
@@ -344,8 +362,11 @@ def batch_match_claims(
 
     if TEST_MODE_RANDOM:
         logger.warning("⚠️ Remember: These are TEST RESULTS with random data!")
+        logger.warning(
+            "⚠️ LABOUR_AMOUNT_PROCESSING and PART_AMOUNT_PROCESSING have been updated"
+        )
         logger.info(
-            "💡 To reset for production: UPDATE CLAIM_STATUS SET AUDIT_STATUS = NULL"
+            "💡 To reset for production: UPDATE CLAIM_STATUS SET AUDIT_STATUS = NULL, LABOUR_AMOUNT_PROCESSING = NULL, PART_AMOUNT_PROCESSING = NULL"
         )
 
     return results
@@ -445,6 +466,7 @@ def generate_matching_report(matching_results: Dict[int, Dict]) -> str:
         report_lines.extend(
             [
                 "⚠️  TEST MODE ACTIVE - RANDOM RESULTS ⚠️",
+                "Processing amounts have been updated in database",
                 "=" * 50,
             ]
         )
@@ -479,7 +501,7 @@ def generate_matching_report(matching_results: Dict[int, Dict]) -> str:
                     f"    DMS: Labour={dms.get('labour', 0):.2f}, Parts={dms.get('parts', 0):.2f}"
                 )
                 report_lines.append(
-                    f"    PDF: Labour={extracted.get('labour_amount', 0):.2f}, Parts={extracted.get('part_amount', 0):.2f}"
+                    f"    Processing: Labour={extracted.get('labour_amount', 0):.2f}, Parts={extracted.get('part_amount', 0):.2f}"
                 )
 
     if TEST_MODE_RANDOM:
@@ -488,7 +510,7 @@ def generate_matching_report(matching_results: Dict[int, Dict]) -> str:
                 "",
                 "🔄 TO RESET FOR PRODUCTION:",
                 "1. Set TEST_MODE_RANDOM = False in matching_functions.py",
-                "2. Run: UPDATE CLAIM_STATUS SET AUDIT_STATUS = NULL",
+                "2. Run SQL: UPDATE CLAIM_STATUS SET AUDIT_STATUS = NULL, LABOUR_AMOUNT_PROCESSING = NULL, PART_AMOUNT_PROCESSING = NULL",
                 "3. Restart the service to reprocess all claims",
             ]
         )
@@ -497,13 +519,15 @@ def generate_matching_report(matching_results: Dict[int, Dict]) -> str:
 
 
 # Test helper function to reset audit status for retesting
-def reset_audit_status_for_testing(claim_ids: List[int] = None):
+def reset_audit_status_for_testing(
+    claim_ids: List[int] = None, reset_amounts: bool = True
+):
     """
-    Helper function to reset audit status for testing purposes.
-    This should be called when you want to retest the matching logic.
+    Helper function to reset audit status and processing amounts for testing purposes.
 
     Args:
         claim_ids: List of claim IDs to reset, or None to reset all
+        reset_amounts: Whether to also reset LABOUR_AMOUNT_PROCESSING and PART_AMOUNT_PROCESSING
     """
     try:
         import db_handler
@@ -511,20 +535,29 @@ def reset_audit_status_for_testing(claim_ids: List[int] = None):
         with db_handler.DatabaseConnection("bgate") as connection:
             cursor = connection.cursor()
 
+            if reset_amounts:
+                reset_columns = """
+                    AUDIT_STATUS = NULL,
+                    LABOUR_AMOUNT_PROCESSING = NULL,
+                    PART_AMOUNT_PROCESSING = NULL,
+                """
+            else:
+                reset_columns = "AUDIT_STATUS = NULL,"
+
             if claim_ids:
                 placeholders = ",".join([f":id{i}" for i in range(len(claim_ids))])
                 query = f"""
                     UPDATE CLAIM_STATUS 
-                    SET AUDIT_STATUS = NULL,
+                    SET {reset_columns}
                         LAST_MODIFIED_DATE = CURRENT_TIMESTAMP
                     WHERE CLAIM_ID IN ({placeholders})
                 """
                 params = {f"id{i}": claim_id for i, claim_id in enumerate(claim_ids)}
                 cursor.execute(query, params)
             else:
-                query = """
+                query = f"""
                     UPDATE CLAIM_STATUS 
-                    SET AUDIT_STATUS = NULL,
+                    SET {reset_columns}
                         LAST_MODIFIED_DATE = CURRENT_TIMESTAMP
                     WHERE AUDIT_STATUS IS NOT NULL
                 """
@@ -534,12 +567,62 @@ def reset_audit_status_for_testing(claim_ids: List[int] = None):
             connection.commit()
             cursor.close()
 
-            logger.info(f"✅ Reset audit status for {reset_count} claims")
+            logger.info(
+                f"✅ Reset audit status {'and processing amounts ' if reset_amounts else ''}for {reset_count} claims"
+            )
             return reset_count
 
     except Exception as e:
         logger.error(f"❌ Error resetting audit status: {e}")
         return 0
+
+
+def check_processing_amounts():
+    """
+    Helper function to check the current state of processing amounts in the database.
+    Useful for verifying test results.
+    """
+    try:
+        import db_handler
+
+        with db_handler.DatabaseConnection("bgate") as connection:
+            query = """
+                SELECT 
+                    AUDIT_STATUS,
+                    COUNT(*) as count,
+                    AVG(LABOUR_AMOUNT_DMS) as avg_labour_dms,
+                    AVG(LABOUR_AMOUNT_PROCESSING) as avg_labour_proc,
+                    AVG(PART_AMOUNT_DMS) as avg_part_dms,
+                    AVG(PART_AMOUNT_PROCESSING) as avg_part_proc
+                FROM CLAIM_STATUS
+                WHERE AUDIT_STATUS IS NOT NULL
+                GROUP BY AUDIT_STATUS
+                ORDER BY AUDIT_STATUS
+            """
+
+            df = pd.read_sql(query, connection)
+
+            print("\n📊 Processing Amounts Summary:")
+            print("=" * 60)
+            for _, row in df.iterrows():
+                print(f"\n{row['AUDIT_STATUS']} Claims ({row['count']} total):")
+                print(
+                    f"  Avg Labour - DMS: {row['avg_labour_dms']:.2f}, Processing: {row['avg_labour_proc']:.2f}"
+                )
+                print(
+                    f"  Avg Parts  - DMS: {row['avg_part_dms']:.2f}, Processing: {row['avg_part_proc']:.2f}"
+                )
+
+                if row["AUDIT_STATUS"] == "COMPLETE":
+                    print(f"  ✅ Processing amounts should match DMS amounts")
+                else:
+                    print(f"  ❌ Processing amounts should be random/different")
+
+            return df
+
+    except Exception as e:
+        logger.error(f"❌ Error checking processing amounts: {e}")
+        return None
 
 
 if __name__ == "__main__":
@@ -591,8 +674,16 @@ if __name__ == "__main__":
     # Generate report
     print("\n" + generate_matching_report(results))
 
-    # Show individual results
-    print("\n📋 Individual Results:")
+    # Show individual results with amounts
+    print("\n📋 Individual Results with Processing Amounts:")
     for claim_id, result in results.items():
         status = "PASS" if result["match_success"] else "FAIL"
-        print(f"  CLAIM {claim_id}: {status} - {result['reason']}")
+        details = result.get("details", {})
+        extracted = details.get("extracted_amounts", {})
+        print(f"  CLAIM {claim_id}: {status}")
+        print(f"    Labour: {extracted.get('labour_amount', 0):.2f}")
+        print(f"    Parts: {extracted.get('part_amount', 0):.2f}")
+
+    print("\n💡 Note: Processing amounts have been updated in the database")
+    print("   COMPLETE claims: LABOUR/PART_AMOUNT_PROCESSING = DMS amounts")
+    print("   REJECTED claims: LABOUR/PART_AMOUNT_PROCESSING = random amounts")

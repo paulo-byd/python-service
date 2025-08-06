@@ -31,6 +31,51 @@ def set_environment_mode(mode):
     _ENVIRONMENT_MODE = mode
 
 
+def update_processing_amounts(claim_id: int, labour_amount: float, part_amount: float):
+    """
+    Update the LABOUR_AMOUNT_PROCESSING and PART_AMOUNT_PROCESSING columns in CLAIM_STATUS.
+
+    Args:
+        claim_id: The claim ID to update
+        labour_amount: The labour amount from processing
+        part_amount: The part amount from processing
+    """
+    try:
+        import db_handler
+
+        with db_handler.DatabaseConnection("bgate") as connection:
+            cursor = connection.cursor()
+
+            update_query = """
+                UPDATE CLAIM_STATUS 
+                SET LABOUR_AMOUNT_PROCESSING = :labour_amount,
+                    PART_AMOUNT_PROCESSING = :part_amount,
+                    LAST_MODIFIED_DATE = CURRENT_TIMESTAMP
+                WHERE CLAIM_ID = :claim_id
+            """
+
+            cursor.execute(
+                update_query,
+                {
+                    "labour_amount": labour_amount,
+                    "part_amount": part_amount,
+                    "claim_id": claim_id,
+                },
+            )
+
+            connection.commit()
+            cursor.close()
+
+            logger.info(
+                f"✅ Updated processing amounts for CLAIM_ID {claim_id}: Labour={labour_amount:.2f}, Parts={part_amount:.2f}"
+            )
+
+    except Exception as e:
+        logger.error(
+            f"❌ Error updating processing amounts for CLAIM_ID {claim_id}: {e}"
+        )
+
+
 def initialize_connection_pools(min_connections=2, max_connections=10):
     """Initialize connection pools for BGATE database only (DMS uses direct connections)"""
     global _DMS_POOL, _BGATE_POOL
