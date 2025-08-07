@@ -132,7 +132,7 @@ pdf_processing:
 # Audit/Matching Pipeline Configuration  
 audit_matching:
   # Batch processing settings
-  max_claims_per_batch: 20        # Audit this many claims at a time
+  max_claims_per_batch: 100        # Audit this many claims at a time
   
   # Matching intervals (in hours)
   interval_hours: 4  # How often to run audit matching (for scheduled runs)

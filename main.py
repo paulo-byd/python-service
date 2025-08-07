@@ -468,21 +468,27 @@ def run_download_process():
             if processing_results:
                 logger.info(f"📄 Processed PDFs for {len(processing_results)} claims")
 
-            # Then, run audit matching for any claims ready for audit
-            matching_results = run_batch_audit_matching()
+                # Run audit matching immediately after PDF processing
+                matching_results = run_batch_audit_matching()
 
-            if matching_results:
-                logger.info(
-                    f"🔍 Completed audit matching for {len(matching_results)} claims"
-                )
+                if matching_results:
+                    logger.info(
+                        f"🔍 Completed audit matching for {len(matching_results)} claims"
+                    )
+                else:
+                    logger.info("🔍 No claims were ready for audit matching")
             else:
-                logger.info("🔍 No claims were ready for audit matching")
+                logger.info("📄 No claims were processed for PDFs")
+
+                # Still check if there are any claims ready for audit from previous runs
+                matching_results = run_batch_audit_matching()
+                if matching_results:
+                    logger.info(
+                        f"🔍 Completed audit matching for {len(matching_results)} claims from previous processing"
+                    )
 
         except Exception as e:
             logger.error(f"❌ Error in auto-audit process: {e}")
-            # Don't fail the entire download process if audit fails
-    else:
-        logger.info("Auto-audit disabled in configuration")
 
 
 def process_claims_batch_pdfs(max_claims=None):
@@ -593,10 +599,22 @@ def process_claims_batch_pdfs(max_claims=None):
                 failed_claims += 1
                 continue
 
-        logger.info(
-            f"📊 PDF processing completed: {successful_claims} successful, {failed_claims} failed"
-        )
-        return processing_results
+        if successful_claims > 0:
+            logger.info(f"📄 PDF processing completed for {successful_claims} claims")
+            logger.info("🔄 Triggering immediate audit matching...")
+
+            # Run audit matching for all available claims
+            matching_results = run_batch_audit_matching()
+
+            if matching_results:
+                logger.info(
+                    f"🔍 Immediate audit matching completed for {len(matching_results)} claims"
+                )
+
+                logger.info(
+                    f"📊 PDF processing completed: {successful_claims} successful, {failed_claims} failed"
+                )
+                return processing_results
 
     except Exception as e:
         logger.error(f"🚨 Critical error in batch PDF processing: {e}")
@@ -605,18 +623,19 @@ def process_claims_batch_pdfs(max_claims=None):
 
 def run_batch_audit_matching(max_claims=None):
     """
-    Run audit matching for claims that have been processed.
-    This is the Phase 5 implementation.
+    Run audit matching for ALL claims that have been processed.
+    Processes in batches until no more claims are available.
+    This runs continuously until all available claims are processed.
 
     Args:
-        max_claims (int): Maximum number of claims to audit (None = use config)
+        max_claims (int): Not used in continuous mode - kept for compatibility
     """
     if not MATCHING_AVAILABLE:
         logger.warning("⚠️ Matching functions not available - skipping audit matching")
         return {}
 
     logger.info(
-        f"\n🔍 Starting batch audit matching at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        f"\n🔍 Starting continuous audit matching at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
     )
 
     try:
@@ -627,180 +646,143 @@ def run_batch_audit_matching(max_claims=None):
             logger.error("Invalid matching configuration - aborting audit matching")
             return {}
 
-        # Get audit configuration
-        if max_claims is None:
-            max_claims = config.get("audit_matching", {}).get(
-                "max_claims_per_batch", 20
-            )
+        # Get batch size from config
+        batch_size = config.get("audit_matching", {}).get("max_claims_per_batch", 100)
 
-        # Get claims ready for audit
-        claims_df = db_handler.get_claims_ready_for_audit()
+        all_results = {}
+        total_processed = 0
+        batch_number = 1
+        successful_audits_total = 0
+        failed_audits_total = 0
 
-        if claims_df.empty:
-            logger.info("No claims ready for audit matching")
-            return {}
+        # Continue processing until no more claims are available
+        while True:
+            logger.info(f"🔍 Starting batch {batch_number} (max size: {batch_size})...")
 
-        # Limit to configured batch size
-        claims_to_audit = claims_df.head(max_claims)
-        logger.info(f"Auditing {len(claims_to_audit)} claims (max: {max_claims})")
+            # Get claims ready for audit
+            claims_df = db_handler.get_claims_ready_for_audit()
 
-        # Prepare claim data for matching
-        claim_data_list = []
-        processing_results_dict = {}
-
-        for _, claim_row in claims_to_audit.iterrows():
-            claim_id = claim_row["CLAIM_ID"]
-
-            # Add claim data
-            claim_data_list.append(
-                {
-                    "CLAIM_ID": claim_id,
-                    "LABOUR_AMOUNT_DMS": claim_row.get("LABOUR_AMOUNT_DMS", 0),
-                    "PART_AMOUNT_DMS": claim_row.get("PART_AMOUNT_DMS", 0),
-                }
-            )
-
-            # Get mock processing results for this claim
-            # In reality, this would come from stored processing results
-            pdf_files = db_handler.get_claim_pdf_files(claim_id)
-            processing_results_dict[claim_id] = get_mock_processing_results_for_claim(
-                claim_id, pdf_files
-            )
-
-        # Perform batch matching
-        matching_results = batch_match_claims(
-            claim_data_list, processing_results_dict, config
-        )
-
-        # Update audit status based on results
-        successful_audits = 0
-        failed_audits = 0
-
-        for claim_id, result in matching_results.items():
-            try:
-                if result["match_success"]:
-                    db_handler.update_audit_status(claim_id, "COMPLETE")
-                    successful_audits += 1
-                    logger.info(
-                        f"✅ CLAIM_ID {claim_id}: Audit passed - {result['reason']}"
-                    )
+            if claims_df.empty:
+                if batch_number == 1:
+                    logger.info("No claims ready for audit matching")
                 else:
-                    db_handler.update_audit_status(claim_id, "REJECTED")
-                    failed_audits += 1
-                    logger.warning(
-                        f"❌ CLAIM_ID {claim_id}: Audit failed - {result['reason']}"
+                    logger.info(
+                        f"✅ No more claims ready for audit matching after processing {total_processed} total claims"
                     )
+                break
 
-            except Exception as e:
-                logger.error(
-                    f"❌ Error updating audit status for CLAIM_ID {claim_id}: {e}"
+            # Take only batch_size claims for this iteration
+            batch_claims = claims_df.head(batch_size)
+
+            if len(batch_claims) == 0:
+                break
+
+            logger.info(
+                f"🔍 Processing batch {batch_number}: {len(batch_claims)} claims"
+            )
+
+            # Prepare claim data for matching
+            claim_data_list = []
+            processing_results_dict = {}
+
+            for _, claim_row in batch_claims.iterrows():
+                claim_id = claim_row["CLAIM_ID"]
+
+                # Add claim data
+                claim_data_list.append(
+                    {
+                        "CLAIM_ID": claim_id,
+                        "LABOUR_AMOUNT_DMS": claim_row.get("LABOUR_AMOUNT_DMS", 0),
+                        "PART_AMOUNT_DMS": claim_row.get("PART_AMOUNT_DMS", 0),
+                    }
                 )
-                failed_audits += 1
 
-        # Generate and log report
-        report = generate_matching_report(matching_results)
-        logger.info(f"\n{report}")
+                # Get mock processing results for this claim
+                # In reality, this would come from stored processing results
+                pdf_files = db_handler.get_claim_pdf_files(claim_id)
+                processing_results_dict[claim_id] = (
+                    get_mock_processing_results_for_claim(claim_id, pdf_files)
+                )
 
-        logger.info(
-            f"📊 Audit matching completed: {successful_audits} passed, {failed_audits} failed"
-        )
-        return matching_results
+            # Perform batch matching
+            batch_matching_results = batch_match_claims(
+                claim_data_list, processing_results_dict, config
+            )
 
-    except Exception as e:
-        logger.error(f"🚨 Critical error in batch audit matching: {e}")
-        return {}
-    """
-    Process all successfully downloaded PDF files that haven't been processed yet.
-    This runs after all download cycles to batch process accumulated files.
+            # Update audit status based on results
+            successful_audits_batch = 0
+            failed_audits_batch = 0
 
-    Args:
-        config (dict): Configuration dictionary
+            for claim_id, result in batch_matching_results.items():
+                try:
+                    if result["match_success"]:
+                        db_handler.update_audit_status(claim_id, "COMPLETE")
+                        successful_audits_batch += 1
+                        successful_audits_total += 1
+                        logger.info(
+                            f"✅ CLAIM_ID {claim_id}: Audit passed - {result['reason']}"
+                        )
+                    else:
+                        db_handler.update_audit_status(claim_id, "REJECTED")
+                        failed_audits_batch += 1
+                        failed_audits_total += 1
+                        logger.warning(
+                            f"❌ CLAIM_ID {claim_id}: Audit failed - {result['reason']}"
+                        )
 
-    Returns:
-        dict: Processing results from the batch processing script
-    """
-    if not PDF_PROCESSING_AVAILABLE:
-        logger.warning("⚠️ PDF processing not available - skipping processing step")
-        return {}
+                except Exception as e:
+                    logger.error(
+                        f"❌ Error updating audit status for CLAIM_ID {claim_id}: {e}"
+                    )
+                    failed_audits_batch += 1
+                    failed_audits_total += 1
 
-    try:
-        # Get all successfully downloaded files that need processing
-        connection = db_handler.get_bgate_db_connection()
+            # Add batch results to overall results
+            all_results.update(batch_matching_results)
 
-        # Query for files that are downloaded but not yet processed
-        # TODO: Add a PROCESSED flag to the database table to track processing status
-        # For now, we'll process all successful downloads from recent time period
-        query = """
-            SELECT LOCAL_FILE_PATH, FILE_ID, CLAIM_ID, CLAIM_NO
-            FROM PDF_DOWNLOAD_DMS_CLAIMS 
-            WHERE STATUS = 'SUCCESS' 
-            AND LOCAL_FILE_PATH IS NOT NULL
-            AND DOWNLOAD_TIMESTAMP >= SYSDATE - 1  -- Last 24 hours
-            ORDER BY DOWNLOAD_TIMESTAMP
-        """
+            # Update counters
+            total_processed += len(batch_claims)
 
-        df = pd.read_sql(query, connection)
-        connection.close()
+            # Log batch summary
+            logger.info(
+                f"📊 Batch {batch_number} completed: {successful_audits_batch} passed, {failed_audits_batch} failed"
+            )
 
-        if df.empty:
-            logger.info("No files found for processing")
-            return {}
+            batch_number += 1
 
-        # Filter to only files that actually exist on disk
-        existing_files = []
-        for _, row in df.iterrows():
-            file_path = row["LOCAL_FILE_PATH"]
-            if os.path.exists(file_path):
-                existing_files.append(file_path)
-            else:
-                logger.warning(f"File not found on disk: {file_path}")
+            # If we processed less than batch_size, we've reached the end
+            if len(batch_claims) < batch_size:
+                logger.info(f"✅ Processed final batch of {len(batch_claims)} claims")
+                break
 
-        if not existing_files:
-            logger.warning("No existing files found for processing")
-            return {}
+            # Small delay between batches to prevent overwhelming the database
+            time.sleep(0.1)
 
-        logger.info(
-            f"🔍 Starting batch PDF processing for {len(existing_files)} files..."
-        )
+        # Generate and log final report if any claims were processed
+        if all_results:
+            report = generate_matching_report(all_results)
+            logger.info(f"\n{report}")
 
-        # Convert file paths to Path objects
-        pdf_file_paths = [Path(file_path) for file_path in existing_files]
+        # Final summary
+        if total_processed > 0:
+            logger.info(f"📊 Continuous audit matching completed:")
+            logger.info(f"   Total batches: {batch_number - 1}")
+            logger.info(f"   Total claims processed: {total_processed}")
+            logger.info(
+                f"   Total passed: {successful_audits_total} ({successful_audits_total / total_processed * 100:.1f}%)"
+            )
+            logger.info(
+                f"   Total failed: {failed_audits_total} ({failed_audits_total / total_processed * 100:.1f}%)"
+            )
+        else:
+            logger.info(
+                "📊 Continuous audit matching completed: No claims were processed"
+            )
 
-        # Run the batch processing on the entire storage directory
-        # This is more efficient than processing individual files
-        storage_path = Path(config["download"]["storage_path"])
-        processing_results_json = run_batch_processing(
-            input_pdf_dir_path=storage_path,
-            pdf_file_paths=[],  # Empty list means process entire directory
-        )
-
-        # Parse the JSON results
-        processing_results = json.loads(processing_results_json)
-
-        logger.info(
-            f"✅ Batch PDF processing completed successfully for {len(processing_results)} files"
-        )
-
-        # Log some sample results for monitoring
-        if processing_results:
-            logger.info("📄 Sample processing results:")
-            for i, (key, value) in enumerate(list(processing_results.items())[:3]):
-                logger.info(f"   {key}: {value}")
-            if len(processing_results) > 3:
-                logger.info(f"   ... and {len(processing_results) - 3} more files")
-
-        # TODO: Future enhancement - Store processing results in database
-        # This is where we would add code to store the processing results
-        # in a database table for future reference and analysis
-        # Also add a PROCESSED flag to PDF_DOWNLOAD_DMS_CLAIMS table
-        # Example:
-        # db_handler.store_processing_results(processing_results)
-        # db_handler.mark_files_as_processed(file_ids)
-
-        return processing_results
+        return all_results
 
     except Exception as e:
-        logger.error(f"❌ Error during batch PDF processing: {e}")
+        logger.error(f"🚨 Critical error in continuous audit matching: {e}")
         return {}
 
 
@@ -980,15 +962,6 @@ if __name__ == "__main__":
         hours=pdf_processing_hours,
         max_instances=1,
         id="pdf_processing_job",
-    )
-
-    # Schedule audit matching
-    scheduler.add_job(
-        run_batch_audit_matching_job,
-        "interval",
-        hours=audit_matching_hours,
-        max_instances=1,
-        id="audit_matching_job",
     )
 
     # Run the download job immediately on the first start
