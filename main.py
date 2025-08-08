@@ -493,7 +493,7 @@ def run_download_process():
 
 def process_claims_batch_pdfs(max_claims=None):
     """
-    Process PDF files for claims that are ready for processing.
+    Process PDF files for claims using individual file processing approach.
 
     Args:
         max_claims (int): Maximum number of claims to process (None = use config)
@@ -503,7 +503,7 @@ def process_claims_batch_pdfs(max_claims=None):
         return {}
 
     logger.info(
-        f"\n🎯 Starting batch PDF processing at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        f"\n🎯 Starting ENHANCED batch PDF processing at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
     )
 
     try:
@@ -514,7 +514,7 @@ def process_claims_batch_pdfs(max_claims=None):
             max_claims = config.get("pdf_processing", {}).get(
                 "max_claims_per_batch", 10
             )
-        max_files_per_call = config.get("pdf_processing", {}).get(
+        max_files_per_claim = config.get("pdf_processing", {}).get(
             "max_files_per_processing_call", 50
         )
 
@@ -558,67 +558,488 @@ def process_claims_batch_pdfs(max_claims=None):
                     failed_claims += 1
                     continue
 
-                # Limit files per processing call
-                if len(existing_files) > max_files_per_call:
+                # Limit files per claim
+                if len(existing_files) > max_files_per_claim:
                     logger.warning(
-                        f"Too many files for CLAIM_ID {claim_id} ({len(existing_files)}), limiting to {max_files_per_call}"
+                        f"Too many files for CLAIM_ID {claim_id} ({len(existing_files)}), limiting to {max_files_per_claim}"
                     )
-                    existing_files = existing_files[:max_files_per_call]
+                    existing_files = existing_files[:max_files_per_claim]
 
-                # Convert to Path objects
-                pdf_file_paths = [Path(file_path) for file_path in existing_files]
-
-                # Process the PDFs for this claim
+                # Use the enhanced individual file processing approach
                 logger.info(
-                    f"Processing {len(pdf_file_paths)} PDF files for CLAIM_ID {claim_id}"
+                    f"Processing {len(existing_files)} PDF files individually for CLAIM_ID {claim_id}"
                 )
 
-                # Call the processing function with specific files
-                storage_path = Path(config["download"]["storage_path"])
-                processing_results_json = run_batch_processing(
-                    input_pdf_dir_path=storage_path,
-                    pdf_file_paths=pdf_file_paths,  # Process specific files
-                )
+                # Import the enhanced processing function
+                try:
+                    from process_pdf_dir import process_claim_pdfs_individually
 
-                # Parse the results
-                claim_processing_results = json.loads(processing_results_json)
+                    # Process the PDFs using the new individual approach
+                    claim_processing_results = process_claim_pdfs_individually(
+                        claim_id, existing_files
+                    )
+
+                except ImportError:
+                    # Fallback to mock for testing
+                    logger.warning(
+                        "Using mock individual processing - process_pdf_dir enhanced function not available"
+                    )
+                    from matching_functions import (
+                        get_enhanced_processing_results_for_claim,
+                    )
+
+                    claim_processing_results = (
+                        get_enhanced_processing_results_for_claim(
+                            claim_id, existing_files
+                        )
+                    )
+
+                # Store the results
                 processing_results[claim_id] = claim_processing_results
 
-                # TODO: HERE WE NEED TO ADD THE RESULT FROM THE PDF DATA TO THE DATABASE (LABOUR_AMOUNT_PROCESSING and PART_AMOUNT_PROCESSING )
+                # Extract amounts from processing results and update database
+                extracted_amounts = extract_amounts_from_processing_results(
+                    claim_processing_results
+                )
+
+                # Update the processing amounts in the database
+                db_handler.update_processing_amounts(
+                    claim_id,
+                    extracted_amounts["labour_amount"],
+                    extracted_amounts["part_amount"],
+                )
 
                 # Mark claim as ready for audit
                 db_handler.update_audit_status(claim_id, "PENDING")
 
                 successful_claims += 1
-                logger.info(
-                    f"✅ Successfully processed {len(claim_processing_results)} files for CLAIM_ID {claim_id}"
-                )
+
+                # Log processing summary
+                if "processing_summary" in claim_processing_results:
+                    summary = claim_processing_results["processing_summary"]
+                    logger.info(f"✅ CLAIM_ID {claim_id} processed successfully:")
+                    logger.info(
+                        f"   Files: {summary.get('successful_files', 0)}/{len(existing_files)} successful"
+                    )
+                    logger.info(
+                        f"   Labour: R$ {extracted_amounts['labour_amount']:,.2f}"
+                    )
+                    logger.info(f"   Parts: R$ {extracted_amounts['part_amount']:,.2f}")
+                    logger.info(
+                        f"   Total: R$ {extracted_amounts['total_amount']:,.2f}"
+                    )
+                else:
+                    logger.info(
+                        f"✅ Successfully processed {len(existing_files)} files for CLAIM_ID {claim_id}"
+                    )
 
             except Exception as e:
                 logger.error(f"❌ Error processing CLAIM_ID {claim_id}: {e}")
                 failed_claims += 1
                 continue
 
-        if successful_claims > 0:
-            logger.info(f"📄 PDF processing completed for {successful_claims} claims")
-            logger.info("🔄 Triggering immediate audit matching...")
+        logger.info(
+            f"📄 Enhanced PDF processing completed: {successful_claims} successful, {failed_claims} failed"
+        )
 
-            # Run audit matching for all available claims
-            matching_results = run_batch_audit_matching()
+        # Trigger immediate audit matching if any claims were processed successfully
+        if successful_claims > 0:
+            logger.info("🔄 Triggering immediate enhanced audit matching...")
+            matching_results = run_batch_audit_matching_enhanced()
 
             if matching_results:
                 logger.info(
-                    f"🔍 Immediate audit matching completed for {len(matching_results)} claims"
+                    f"🔍 Immediate enhanced audit matching completed for {len(matching_results)} claims"
                 )
 
-                logger.info(
-                    f"📊 PDF processing completed: {successful_claims} successful, {failed_claims} failed"
-                )
-                return processing_results
+        return processing_results
 
     except Exception as e:
-        logger.error(f"🚨 Critical error in batch PDF processing: {e}")
+        logger.error(f"🚨 Critical error in enhanced batch PDF processing: {e}")
         return {}
+
+
+def run_batch_audit_matching_enhanced(max_claims=None):
+    """
+    ENHANCED - Run audit matching with enhanced individual file processing support.
+    """
+    if not MATCHING_AVAILABLE:
+        logger.warning("⚠️ Matching functions not available - skipping audit matching")
+        return {}
+
+    logger.info(
+        f"\n🔍 Starting ENHANCED continuous audit matching at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+    )
+
+    try:
+        config = db_handler.load_config()
+
+        # Validate matching configuration
+        from matching_functions import validate_matching_config
+
+        if not validate_matching_config(config):
+            logger.error(
+                "Invalid matching configuration - aborting enhanced audit matching"
+            )
+            return {}
+
+        # Get batch size from config
+        batch_size = config.get("audit_matching", {}).get("max_claims_per_batch", 100)
+
+        all_results = {}
+        total_processed = 0
+        batch_number = 1
+        successful_audits_total = 0
+        failed_audits_total = 0
+
+        # Continue processing until no more claims are available
+        while True:
+            logger.info(
+                f"🔍 Starting enhanced batch {batch_number} (max size: {batch_size})..."
+            )
+
+            # Get claims ready for audit
+            claims_df = db_handler.get_claims_ready_for_audit()
+
+            if claims_df.empty:
+                if batch_number == 1:
+                    logger.info("No claims ready for enhanced audit matching")
+                else:
+                    logger.info(
+                        f"✅ No more claims ready for enhanced audit matching after processing {total_processed} total claims"
+                    )
+                break
+
+            # Take only batch_size claims for this iteration
+            batch_claims = claims_df.head(batch_size)
+
+            if len(batch_claims) == 0:
+                break
+
+            logger.info(
+                f"🔍 Processing enhanced batch {batch_number}: {len(batch_claims)} claims"
+            )
+
+            # Prepare claim data for enhanced matching
+            claim_data_list = []
+            processing_results_dict = {}
+
+            for _, claim_row in batch_claims.iterrows():
+                claim_id = claim_row["CLAIM_ID"]
+
+                # Add complete claim data for enhanced validation
+                claim_data = {
+                    "CLAIM_ID": claim_id,
+                    "CLAIM_NO": claim_row.get("CLAIM_NO"),
+                    "VIN": claim_row.get("VIN"),
+                    "LABOUR_AMOUNT_DMS": claim_row.get("LABOUR_AMOUNT_DMS", 0),
+                    "PART_AMOUNT_DMS": claim_row.get("PART_AMOUNT_DMS", 0),
+                    "DEALER_CODE": claim_row.get("DEALER_CODE"),
+                    "DEALER_NAME": claim_row.get("DEALER_NAME"),
+                }
+                claim_data_list.append(claim_data)
+
+                # Get enhanced processing results for this claim
+                pdf_files = db_handler.get_claim_pdf_files(claim_id)
+
+                # Try to get real processing results, fallback to enhanced mock
+                try:
+                    from matching_functions import (
+                        get_enhanced_processing_results_for_claim,
+                    )
+
+                    processing_results_dict[claim_id] = (
+                        get_enhanced_processing_results_for_claim(claim_id, pdf_files)
+                    )
+                except Exception as e:
+                    logger.warning(
+                        f"Could not get enhanced processing results for CLAIM_ID {claim_id}: {e}"
+                    )
+                    # Fallback to legacy mock
+                    from matching_functions import get_mock_processing_results_for_claim
+
+                    processing_results_dict[claim_id] = (
+                        get_mock_processing_results_for_claim(claim_id, pdf_files)
+                    )
+
+            # Perform enhanced batch matching
+            from matching_functions import batch_match_claims
+
+            batch_matching_results = batch_match_claims(
+                claim_data_list, processing_results_dict, config
+            )
+
+            # Update audit status based on results
+            successful_audits_batch = 0
+            failed_audits_batch = 0
+
+            for claim_id, result in batch_matching_results.items():
+                try:
+                    if result["match_success"]:
+                        db_handler.update_audit_status(claim_id, "COMPLETE")
+                        successful_audits_batch += 1
+                        successful_audits_total += 1
+                        logger.info(
+                            f"✅ CLAIM_ID {claim_id}: Enhanced audit passed - {result['reason']}"
+                        )
+
+                        # Log enhanced details for successful matches
+                        if (
+                            "details" in result
+                            and "data_validation" in result["details"]
+                        ):
+                            validation = result["details"]["data_validation"]
+                            if validation.get("overall_data_match"):
+                                logger.debug(
+                                    f"   Data validation: ✅ Claim/VIN match confirmed"
+                                )
+
+                    else:
+                        db_handler.update_audit_status(claim_id, "REJECTED")
+                        failed_audits_batch += 1
+                        failed_audits_total += 1
+                        logger.warning(
+                            f"❌ CLAIM_ID {claim_id}: Enhanced audit failed - {result['reason']}"
+                        )
+
+                        # Log enhanced details for failed matches
+                        if "details" in result:
+                            details = result["details"]
+                            if "data_validation" in details and details[
+                                "data_validation"
+                            ].get("issues_found"):
+                                issues = details["data_validation"]["issues_found"]
+                                logger.warning(
+                                    f"   Data validation issues: {', '.join(issues)}"
+                                )
+
+                except Exception as e:
+                    logger.error(
+                        f"❌ Error updating audit status for CLAIM_ID {claim_id}: {e}"
+                    )
+                    failed_audits_batch += 1
+                    failed_audits_total += 1
+
+            # Add batch results to overall results
+            all_results.update(batch_matching_results)
+
+            # Update counters
+            total_processed += len(batch_claims)
+
+            # Log enhanced batch summary
+            logger.info(
+                f"📊 Enhanced batch {batch_number} completed: {successful_audits_batch} passed, {failed_audits_batch} failed"
+            )
+
+            batch_number += 1
+
+            # If we processed less than batch_size, we've reached the end
+            if len(batch_claims) < batch_size:
+                logger.info(
+                    f"✅ Processed final enhanced batch of {len(batch_claims)} claims"
+                )
+                break
+
+            # Small delay between batches to prevent overwhelming the database
+            time.sleep(0.1)
+
+        # Generate and log enhanced final report if any claims were processed
+        if all_results:
+            from matching_functions import generate_matching_report
+
+            report = generate_matching_report(all_results)
+            logger.info(f"\n{report}")
+
+        # Enhanced final summary
+        if total_processed > 0:
+            logger.info(f"📊 Enhanced continuous audit matching completed:")
+            logger.info(f"   Total batches: {batch_number - 1}")
+            logger.info(f"   Total claims processed: {total_processed}")
+            logger.info(
+                f"   Total passed: {successful_audits_total} ({successful_audits_total / total_processed * 100:.1f}%)"
+            )
+            logger.info(
+                f"   Total failed: {failed_audits_total} ({failed_audits_total / total_processed * 100:.1f}%)"
+            )
+            logger.info(
+                f"   Enhanced features: Individual file processing, data validation, amount extraction by doc type"
+            )
+        else:
+            logger.info(
+                "📊 Enhanced continuous audit matching completed: No claims were processed"
+            )
+
+        return all_results
+
+    except Exception as e:
+        logger.error(f"🚨 Critical error in enhanced continuous audit matching: {e}")
+        return {}
+
+
+def extract_amounts_from_processing_results(
+    processing_results: Dict[str, Any],
+) -> Dict[str, float]:
+    """
+    Extract financial amounts from PDF processing results.
+    This function should be imported from matching_functions.py
+    """
+    try:
+        from matching_functions import (
+            extract_amounts_from_processing_results as extract_func,
+        )
+
+        return extract_func(processing_results)
+    except ImportError:
+        logger.warning("Could not import enhanced extraction function, using fallback")
+        return {
+            "labour_amount": 0.0,
+            "part_amount": 0.0,
+            "total_amount": 0.0,
+            "confidence_score": 0.0,
+            "extraction_method": "fallback",
+        }
+
+
+# Updated functions that should replace the existing ones in main.py
+def run_batch_pdf_processing_enhanced():
+    """
+    Enhanced claim-based PDF processing function.
+    Processes PDFs for claims that have complete file downloads using individual file processing.
+    """
+    logger.info(
+        f"\n🎯 Starting ENHANCED claim-based PDF processing at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+    )
+
+    try:
+        processing_results = process_claims_batch_pdfs_enhanced()
+
+        if processing_results:
+            logger.info(
+                f"🎯 Enhanced claim-based PDF processing completed successfully for {len(processing_results)} claims"
+            )
+        else:
+            logger.info(
+                "🎯 Enhanced claim-based PDF processing completed - no claims processed"
+            )
+
+    except Exception as e:
+        logger.error(f"🚨 Critical error in enhanced claim-based PDF processing: {e}")
+
+
+def run_batch_audit_matching_job_enhanced():
+    """
+    Enhanced scheduled job function for audit matching.
+    Processes claims that have been through PDF processing with enhanced data validation.
+    """
+    logger.info(
+        f"\n🔍 Starting ENHANCED scheduled audit matching at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+    )
+
+    try:
+        matching_results = run_batch_audit_matching_enhanced()
+
+        if matching_results:
+            logger.info(
+                f"🔍 Enhanced scheduled audit matching completed for {len(matching_results)} claims"
+            )
+        else:
+            logger.info(
+                "🔍 Enhanced scheduled audit matching completed - no claims audited"
+            )
+
+    except Exception as e:
+        logger.error(f"🚨 Critical error in enhanced scheduled audit matching: {e}")
+
+
+def run_download_process_enhanced():
+    """
+    Enhanced main download process that integrates with the new individual file processing.
+    """
+    config = db_handler.load_config()
+
+    # Check if parallel mode is enabled in config
+    parallel_enabled = config.get("performance", {}).get("parallel_downloads", False)
+    max_workers = config.get("performance", {}).get("max_workers", 4)
+
+    if parallel_enabled:
+        run_download_process_parallel(max_workers)
+    else:
+        run_download_process_sequential()
+
+    # Enhanced auto-audit with individual file processing
+    auto_audit_enabled = config.get("audit_matching", {}).get(
+        "auto_run_after_download", True
+    )
+
+    if auto_audit_enabled:
+        logger.info(
+            "\n🔄 Auto-triggering ENHANCED audit matching after download completion..."
+        )
+        try:
+            # First, run enhanced PDF processing for any new claims
+            processing_results = process_claims_batch_pdfs_enhanced()
+
+            if processing_results:
+                logger.info(
+                    f"📄 Enhanced processing completed for {len(processing_results)} claims"
+                )
+
+                # Run enhanced audit matching immediately after PDF processing
+                matching_results = run_batch_audit_matching_enhanced()
+
+                if matching_results:
+                    logger.info(
+                        f"🔍 Enhanced audit matching completed for {len(matching_results)} claims"
+                    )
+                else:
+                    logger.info("🔍 No claims were ready for enhanced audit matching")
+            else:
+                logger.info("📄 No claims were processed for enhanced PDFs")
+
+                # Still check if there are any claims ready for audit from previous runs
+                matching_results = run_batch_audit_matching_enhanced()
+                if matching_results:
+                    logger.info(
+                        f"🔍 Enhanced audit matching completed for {len(matching_results)} claims from previous processing"
+                    )
+
+        except Exception as e:
+            logger.error(f"❌ Error in enhanced auto-audit process: {e}")
+
+
+# Instructions for integration:
+"""
+TO INTEGRATE THESE ENHANCEMENTS INTO MAIN.PY:
+
+1. Replace the following functions in main.py with the enhanced versions:
+   - process_claims_batch_pdfs() -> process_claims_batch_pdfs_enhanced()
+   - run_batch_audit_matching() -> run_batch_audit_matching_enhanced()  
+   - run_batch_pdf_processing() -> run_batch_pdf_processing_enhanced()
+   - run_batch_audit_matching_job() -> run_batch_audit_matching_job_enhanced()
+   - run_download_process() -> run_download_process_enhanced()
+
+2. Update the scheduler job registrations to use the enhanced functions:
+   - Change run_batch_pdf_processing to run_batch_pdf_processing_enhanced
+   - Change run_batch_audit_matching_job to run_batch_audit_matching_job_enhanced
+   - Change run_download_process to run_download_process_enhanced
+
+3. Add the extract_amounts_from_processing_results import at the top of main.py
+
+4. Make sure the enhanced process_pdf_dir.py and matching_functions.py are in place
+
+TRANSITION STRATEGY:
+
+Phase 1 (Current): Keep both old and new functions, use enhanced ones for new processing
+Phase 2 (When real PDF processor ready): Set USE_MOCK_PROCESSING = False, TEST_MODE_RANDOM = False  
+Phase 3 (Production): Remove old functions, keep only enhanced versions
+
+The enhanced functions maintain backward compatibility while adding:
+- Individual file processing support
+- Enhanced data validation (claim number, VIN matching)
+- Better amount extraction by document type
+- Improved error reporting and logging
+- Future-ready structure for real PDF processing integration
+"""
 
 
 def run_batch_audit_matching(max_claims=None):

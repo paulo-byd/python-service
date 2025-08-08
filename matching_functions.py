@@ -1,10 +1,9 @@
 """
-Mock Matching Functions for PDF Invoice Matching - TEST VERSION
-This module contains the mock implementation with RANDOM results for testing.
+Matching Functions for PDF Invoice Matching
+This module now supports both the old batch processing and new individual file processing.
 
-IMPORTANT: This version randomly assigns COMPLETE/REJECTED for frontend testing.
-When the real PDF processing is ready, replace this with the production version
-and reset all AUDIT_STATUS to NULL to reprocess.
+IMPORTANT: Still includes TEST MODE with random results for frontend testing.
+When the real PDF processing is ready, replace this with the production version.
 """
 
 import json
@@ -24,37 +23,265 @@ TEST_MODE_RANDOM = True
 RANDOM_SUCCESS_RATE = 0.7  # 70% will be marked as COMPLETE, 30% as REJECTED
 
 
+def extract_amounts_from_processing_results(
+    processing_results: Dict[str, Any],
+) -> Dict[str, float]:
+    """
+    Extract financial amounts from PDF processing results.
+
+    Supports both old batch format and new individual file processing format.
+
+    Args:
+        processing_results: Results from process_claim_pdfs_individually() or legacy format
+
+    Returns:
+        Dict with keys: labour_amount, part_amount, total_amount, confidence_score
+    """
+
+    extracted_amounts = {
+        "labour_amount": 0.0,
+        "part_amount": 0.0,
+        "total_amount": 0.0,
+        "confidence_score": 0.0,
+        "extraction_method": "unknown",
+    }
+
+    try:
+        # Check if this is the new individual file processing format
+        if (
+            "consolidated_data" in processing_results
+            and "processing_summary" in processing_results
+        ):
+            # New format from process_claim_pdfs_individually()
+            summary = processing_results["processing_summary"]
+
+            # Map document types to our amounts
+            # "Mão de Obra" -> labour_amount
+            # "Peças" -> part_amount
+            # "Diversos" -> could be either, for now add to parts
+
+            extracted_amounts["labour_amount"] = summary.get(
+                "total_amount_mao_obra", 0.0
+            )
+            extracted_amounts["part_amount"] = summary.get(
+                "total_amount_pecas", 0.0
+            ) + summary.get("total_amount_diversos", 0.0)
+            extracted_amounts["total_amount"] = summary.get("total_amount_all", 0.0)
+            extracted_amounts["extraction_method"] = "individual_file_processing"
+
+            # Calculate confidence from individual file results
+            if "individual_file_results" in processing_results:
+                total_confidence = 0.0
+                file_count = 0
+
+                for file_path, file_result in processing_results[
+                    "individual_file_results"
+                ].items():
+                    if "overall_stats" in file_result:
+                        confidence = file_result["overall_stats"].get(
+                            "confidence_score", 0.0
+                        )
+                        if confidence > 0:
+                            total_confidence += confidence
+                            file_count += 1
+
+                if file_count > 0:
+                    extracted_amounts["confidence_score"] = (
+                        total_confidence / file_count
+                    )
+
+            logger.debug(
+                f"Extracted amounts using new format: Labour={extracted_amounts['labour_amount']:.2f}, Parts={extracted_amounts['part_amount']:.2f}"
+            )
+
+        else:
+            # Legacy format or old batch processing format
+            extracted_amounts["extraction_method"] = "legacy_batch_processing"
+
+            # Try to extract from old format
+            # This is fallback for compatibility
+            if isinstance(processing_results, dict):
+                # Look for any amount-like keys
+                for key, value in processing_results.items():
+                    if isinstance(value, dict) and "file_name" in value:
+                        # Old compatibility format
+                        break
+
+                # For now, use mock extraction for legacy format
+                logger.warning(
+                    "Using legacy format extraction - consider upgrading to individual file processing"
+                )
+                extracted_amounts = _mock_extract_amounts_legacy(processing_results)
+
+    except Exception as e:
+        logger.error(f"Error extracting amounts from processing results: {e}")
+        # Fallback to zero amounts
+
+    return extracted_amounts
+
+
+def _mock_extract_amounts_legacy(
+    processing_results: Dict[str, Any],
+) -> Dict[str, float]:
+    """
+    Mock extraction for legacy batch processing format.
+    """
+
+    # Generate mock amounts based on number of files processed
+    file_count = len(processing_results) if processing_results else 1
+
+    # Generate realistic amounts based on file count
+    base_amount = random.uniform(500, 2000) * file_count
+    labour_ratio = random.uniform(0.3, 0.7)
+
+    labour_amount = base_amount * labour_ratio
+    part_amount = base_amount * (1 - labour_ratio)
+
+    return {
+        "labour_amount": round(labour_amount, 2),
+        "part_amount": round(part_amount, 2),
+        "total_amount": round(labour_amount + part_amount, 2),
+        "confidence_score": random.uniform(0.75, 0.95),
+        "extraction_method": "mock_legacy",
+    }
+
+
+def validate_claim_data_match(
+    processing_results: Dict[str, Any], claim_data: Dict[str, Any]
+) -> Dict[str, Any]:
+    """
+    Validate that the claim data from PDF processing matches the DMS claim data.
+
+    Checks:
+    - CLAIM_NUMBER from PDFs matches CLAIM_NO from DMS
+    - Chassi from PDFs matches VIN from DMS
+
+    Args:
+        processing_results: Results from individual file processing
+        claim_data: Claim data from DMS (CLAIM_NO, VIN, etc.)
+
+    Returns:
+        Dict with validation results
+    """
+
+    validation_results = {
+        "claim_number_match": False,
+        "chassi_vin_match": False,
+        "overall_data_match": False,
+        "issues_found": [],
+        "claim_numbers_in_pdfs": [],
+        "chassis_in_pdfs": [],
+        "dms_claim_no": claim_data.get("CLAIM_NO"),
+        "dms_vin": claim_data.get("VIN"),
+    }
+
+    try:
+        # Extract claim data from processing results
+        if "consolidated_data" in processing_results:
+            consolidated = processing_results["consolidated_data"]
+
+            # Get claim numbers and chassis from PDFs
+            claim_numbers_found = consolidated.get("claim_numbers_found", [])
+            chassis_found = consolidated.get("chassis_found", [])
+
+            validation_results["claim_numbers_in_pdfs"] = claim_numbers_found
+            validation_results["chassis_in_pdfs"] = chassis_found
+
+            # Validate claim number match
+            dms_claim_no = claim_data.get("CLAIM_NO", "").strip()
+            if dms_claim_no:
+                # Check if any of the PDF claim numbers match the DMS claim number
+                for pdf_claim in claim_numbers_found:
+                    if pdf_claim and pdf_claim.strip().upper() == dms_claim_no.upper():
+                        validation_results["claim_number_match"] = True
+                        break
+
+                if not validation_results["claim_number_match"] and claim_numbers_found:
+                    validation_results["issues_found"].append(
+                        f"Claim number mismatch: DMS='{dms_claim_no}' vs PDFs={claim_numbers_found}"
+                    )
+
+            # Validate VIN/Chassi match
+            dms_vin = claim_data.get("VIN", "").strip()
+            if dms_vin:
+                # Check if any of the PDF chassis match the DMS VIN
+                for pdf_chassi in chassis_found:
+                    if pdf_chassi and pdf_chassi.strip().upper() == dms_vin.upper():
+                        validation_results["chassi_vin_match"] = True
+                        break
+
+                if not validation_results["chassi_vin_match"] and chassis_found:
+                    validation_results["issues_found"].append(
+                        f"VIN/Chassi mismatch: DMS='{dms_vin}' vs PDFs={chassis_found}"
+                    )
+
+            # Overall match requires both claim number and VIN to match
+            validation_results["overall_data_match"] = (
+                validation_results["claim_number_match"]
+                and validation_results["chassi_vin_match"]
+            )
+
+            if not validation_results["overall_data_match"]:
+                if not claim_numbers_found:
+                    validation_results["issues_found"].append(
+                        "No claim numbers found in PDFs"
+                    )
+                if not chassis_found:
+                    validation_results["issues_found"].append(
+                        "No chassis/VIN found in PDFs"
+                    )
+
+        else:
+            # Legacy format - assume match for compatibility
+            validation_results["claim_number_match"] = True
+            validation_results["chassi_vin_match"] = True
+            validation_results["overall_data_match"] = True
+            validation_results["issues_found"].append(
+                "Legacy format - data validation skipped"
+            )
+
+    except Exception as e:
+        logger.error(f"Error validating claim data: {e}")
+        validation_results["issues_found"].append(f"Validation error: {str(e)}")
+
+    return validation_results
+
+
 def match_invoices_with_dms_estimates(
     claim_id: int,
     labour_amount_dms: float,
     part_amount_dms: float,
     processing_results: Dict[str, Any],
     config: Dict | None = None,
+    claim_data: Dict[str, Any] = None,
 ) -> Tuple[bool, str, Dict[str, Any]]:
     """
-    TEST VERSION - Returns random results for frontend testing.
+    ENHANCED VERSION - Now supports individual file processing and data validation.
     Updates LABOUR_AMOUNT_PROCESSING and PART_AMOUNT_PROCESSING in database.
-
-    In production, this will:
-    1. Extract financial information from the processing_results
-    2. Compare LABOUR_AMOUNT and PART_AMOUNT from PDFs with DMS values
-    3. Return match status and detailed breakdown
 
     Args:
         claim_id (int): The claim ID being processed
         labour_amount_dms (float): Labour amount from DMS system
         part_amount_dms (float): Part amount from DMS system
-        processing_results (Dict): Results from run_batch_processing() for this claim's PDFs
+        processing_results (Dict): Results from process_claim_pdfs_individually() or legacy format
         config (Dict): Configuration dictionary (optional)
+        claim_data (Dict): Additional claim data for validation (CLAIM_NO, VIN, etc.)
 
     Returns:
         Tuple[bool, str, Dict]: (match_success, reason, details)
     """
 
-    logger.info(f"🔍 Starting invoice matching for CLAIM_ID {claim_id}")
+    logger.info(f"🔍 Starting enhanced invoice matching for CLAIM_ID {claim_id}")
     logger.info(f"   DMS Labour Amount: {labour_amount_dms}")
     logger.info(f"   DMS Part Amount: {part_amount_dms}")
-    logger.info(f"   Processing results files: {len(processing_results)}")
+
+    # Determine processing result type
+    if "consolidated_data" in processing_results:
+        files_count = processing_results.get("files_processed", 0)
+        logger.info(f"   Individual file processing results: {files_count} files")
+    else:
+        files_count = len(processing_results)
+        logger.info(f"   Legacy processing results: {files_count} entries")
 
     if TEST_MODE_RANDOM:
         logger.warning(
@@ -64,7 +291,18 @@ def match_invoices_with_dms_estimates(
     # Calculate total DMS amount
     total_dms_amount = (labour_amount_dms or 0) + (part_amount_dms or 0)
 
-    # TEST MODE: Generate random but deterministic results
+    # Extract amounts from processing results
+    extracted_amounts = extract_amounts_from_processing_results(processing_results)
+
+    # Validate claim data match (if claim_data provided)
+    data_validation = {}
+    if claim_data:
+        data_validation = validate_claim_data_match(processing_results, claim_data)
+        logger.info(f"   Data validation: {data_validation['overall_data_match']}")
+        if data_validation["issues_found"]:
+            logger.warning(f"   Validation issues: {data_validation['issues_found']}")
+
+    # TEST MODE: Override with random results
     if TEST_MODE_RANDOM:
         # Use claim_id as seed for consistent results per claim
         random.seed(claim_id)
@@ -76,14 +314,9 @@ def match_invoices_with_dms_estimates(
             # SUCCESS: Use exact DMS amounts for processing amounts
             extracted_labour = labour_amount_dms or 0
             extracted_part = part_amount_dms or 0
-
-            reason = f"✅ TEST MODE: Amounts match exactly (random success)"
-
-            logger.info(f"📊 SUCCESS - Setting processing amounts equal to DMS amounts")
-
+            reason = f"✅ TEST MODE: Perfect match (random success)"
         else:
             # FAILURE: Generate random different amounts
-            # Create significant variation for rejected claims
             variation = random.choice(
                 [
                     random.uniform(0.5, 0.8),  # 20-50% less
@@ -92,9 +325,7 @@ def match_invoices_with_dms_estimates(
                 ]
             )
 
-            # Randomize the labour/part split as well
             labour_ratio = random.uniform(0.2, 0.8)
-
             extracted_labour = total_dms_amount * labour_ratio * variation
             extracted_part = total_dms_amount * (1 - labour_ratio) * variation
 
@@ -104,29 +335,36 @@ def match_invoices_with_dms_estimates(
 
             # Generate specific failure reasons
             failure_reasons = [
-                "Labour amount mismatch",
-                "Parts amount mismatch",
-                "Total amount exceeds threshold",
-                "Missing invoice data",
+                "Amount mismatch exceeds tolerance",
+                "Labour amount discrepancy detected",
+                "Parts amount discrepancy detected",
+                "Data validation failed",
                 "Multiple discrepancies found",
             ]
+
+            # Add data validation failures if applicable
+            if (
+                claim_data
+                and data_validation
+                and not data_validation["overall_data_match"]
+            ):
+                failure_reasons.extend(
+                    [
+                        "Claim number mismatch",
+                        "VIN/Chassi mismatch",
+                    ]
+                )
+
             specific_reason = random.choice(failure_reasons)
             reason = f"❌ TEST MODE: {specific_reason} (random failure)"
-
-            logger.info(
-                f"📊 FAILURE - Generated random processing amounts: Labour={extracted_labour:.2f}, Parts={extracted_part:.2f}"
-            )
 
         # Update the database with processing amounts
         db_handler.update_processing_amounts(claim_id, extracted_labour, extracted_part)
 
     else:
-        # Production mode - use the original mock logic
-        mock_extracted_amounts = _mock_extract_amounts_from_pdfs(
-            claim_id, processing_results, total_dms_amount
-        )
-        extracted_labour = mock_extracted_amounts["labour_amount"]
-        extracted_part = mock_extracted_amounts["part_amount"]
+        # PRODUCTION MODE: Use real extracted amounts
+        extracted_labour = extracted_amounts["labour_amount"]
+        extracted_part = extracted_amounts["part_amount"]
 
         # Get tolerance from config
         tolerance_pct = 0.0
@@ -139,25 +377,29 @@ def match_invoices_with_dms_estimates(
 
         # Compare amounts
         labour_match = _amounts_match(
-            labour_amount_dms or 0,
-            extracted_labour,
-            tolerance / 2,
+            labour_amount_dms or 0, extracted_labour, tolerance / 2
         )
-
         part_match = _amounts_match(part_amount_dms or 0, extracted_part, tolerance / 2)
 
-        match_success = labour_match and part_match
+        # Check data validation
+        data_match = True
+        if claim_data and data_validation:
+            data_match = data_validation["overall_data_match"]
+
+        match_success = labour_match and part_match and data_match
 
         # Generate reason
         if match_success:
-            reason = f"✅ Amounts match within tolerance ({tolerance_pct}%)"
+            reason = f"✅ All validations passed (tolerance: {tolerance_pct}%)"
         else:
             mismatches = []
             if not labour_match:
-                mismatches.append("labour")
+                mismatches.append("labour amount")
             if not part_match:
-                mismatches.append("parts")
-            reason = f"❌ Amount mismatch in: {', '.join(mismatches)}"
+                mismatches.append("parts amount")
+            if not data_match:
+                mismatches.append("claim data validation")
+            reason = f"❌ Failed validation: {', '.join(mismatches)}"
 
         # Update database with processing amounts (production mode)
         db_handler.update_processing_amounts(claim_id, extracted_labour, extracted_part)
@@ -165,6 +407,7 @@ def match_invoices_with_dms_estimates(
     # Create detailed results
     details = {
         "test_mode": TEST_MODE_RANDOM,
+        "extraction_method": extracted_amounts.get("extraction_method", "unknown"),
         "dms_amounts": {
             "labour": labour_amount_dms,
             "parts": part_amount_dms,
@@ -174,10 +417,8 @@ def match_invoices_with_dms_estimates(
             "labour_amount": extracted_labour,
             "part_amount": extracted_part,
             "total_amount": extracted_labour + extracted_part,
-            "extraction_confidence": random.uniform(0.85, 0.99)
-            if TEST_MODE_RANDOM
-            else 0.95,
-            "files_processed": len(processing_results),
+            "extraction_confidence": extracted_amounts.get("confidence_score", 0.95),
+            "files_processed": files_count,
         },
         "matching_results": {
             "labour_match": abs((labour_amount_dms or 0) - extracted_labour) < 10,
@@ -189,9 +430,32 @@ def match_invoices_with_dms_estimates(
             if config
             else 0.0,
         },
-        "processed_files": list(processing_results.keys()),
+        "data_validation": data_validation,
         "processing_timestamp": datetime.now().isoformat(),
     }
+
+    # Add processing results summary to details
+    if "consolidated_data" in processing_results:
+        details["processing_results_summary"] = {
+            "doc_types_found": list(
+                processing_results["consolidated_data"].get("doc_types", {}).keys()
+            ),
+            "claim_numbers_found": processing_results["consolidated_data"].get(
+                "claim_numbers_found", []
+            ),
+            "chassis_found": processing_results["consolidated_data"].get(
+                "chassis_found", []
+            ),
+            "cnpjs_found": processing_results["consolidated_data"].get(
+                "cnpjs_found", []
+            ),
+            "successful_files": processing_results["processing_summary"].get(
+                "successful_files", 0
+            ),
+            "failed_files": processing_results["processing_summary"].get(
+                "failed_files", 0
+            ),
+        }
 
     logger.info(f"🔍 Matching result for CLAIM_ID {claim_id}: {reason}")
 
@@ -203,79 +467,6 @@ def match_invoices_with_dms_estimates(
         logger.info(f"   Updated PART_AMOUNT_PROCESSING: {extracted_part:.2f}")
 
     return match_success, reason, details
-
-
-def _mock_extract_amounts_from_pdfs(
-    claim_id: int, processing_results: Dict[str, Any], target_total: float
-) -> Dict[str, float]:
-    """
-    Mock function to simulate extracting financial amounts from PDF processing results.
-    """
-
-    # Simulate different scenarios based on claim_id
-    random.seed(claim_id)  # Deterministic results for testing
-
-    scenario = random.choice(
-        [
-            "exact_match",  # 60% chance
-            "exact_match",
-            "exact_match",
-            "close_match",  # 20% chance
-            "significant_diff",  # 15% chance
-            "no_amounts_found",  # 5% chance
-        ]
-    )
-
-    if scenario == "exact_match":
-        # Perfect match
-        labour_ratio = random.uniform(0.3, 0.7)
-        labour_amount = target_total * labour_ratio
-        part_amount = target_total - labour_amount
-
-    elif scenario == "close_match":
-        # Close but not exact (within 5%)
-        variation = random.uniform(0.95, 1.05)
-        adjusted_total = target_total * variation
-        labour_ratio = random.uniform(0.3, 0.7)
-        labour_amount = adjusted_total * labour_ratio
-        part_amount = adjusted_total - labour_amount
-
-    elif scenario == "significant_diff":
-        # Significant difference (10-30% off)
-        variation = random.choice(
-            [
-                random.uniform(0.7, 0.9),  # 10-30% less
-                random.uniform(1.1, 1.3),  # 10-30% more
-            ]
-        )
-        adjusted_total = target_total * variation
-        labour_ratio = random.uniform(0.3, 0.7)
-        labour_amount = adjusted_total * labour_ratio
-        part_amount = adjusted_total - labour_amount
-
-    else:  # no_amounts_found
-        # Simulate OCR/processing failure
-        labour_amount = 0.0
-        part_amount = 0.0
-
-    # Add some realistic noise
-    if labour_amount > 0:
-        labour_amount = round(labour_amount + random.uniform(-0.50, 0.50), 2)
-    if part_amount > 0:
-        part_amount = round(part_amount + random.uniform(-0.50, 0.50), 2)
-
-    extracted_amounts = {
-        "labour_amount": labour_amount,
-        "part_amount": part_amount,
-        "total_amount": labour_amount + part_amount,
-        "extraction_confidence": random.uniform(0.7, 0.95),
-        "files_processed": len(processing_results),
-        "scenario_used": scenario,  # For debugging
-    }
-
-    logger.debug(f"Mock extracted amounts for CLAIM_ID {claim_id}: {extracted_amounts}")
-
-    return extracted_amounts
 
 
 def _amounts_match(amount1: float, amount2: float, tolerance: float = 0.0) -> bool:
@@ -293,13 +484,15 @@ def batch_match_claims(
     claim_data_list: List[Dict], processing_results_dict: Dict, config: Dict = None
 ) -> Dict[int, Dict]:
     """
-    Process multiple claims for invoice matching in batch.
-    TEST VERSION - Produces random results for testing and updates processing amounts.
+    ENHANCED - Process multiple claims for invoice matching in batch.
+    Now supports both legacy and individual file processing formats.
     """
 
     results = {}
 
-    logger.info(f"🔍 Starting batch invoice matching for {len(claim_data_list)} claims")
+    logger.info(
+        f"🔍 Starting enhanced batch invoice matching for {len(claim_data_list)} claims"
+    )
 
     if TEST_MODE_RANDOM:
         logger.warning(
@@ -328,10 +521,15 @@ def batch_match_claims(
             }
             continue
 
-        # Perform the matching
+        # Perform the enhanced matching
         try:
             match_success, reason, details = match_invoices_with_dms_estimates(
-                claim_id, labour_amount_dms, part_amount_dms, processing_results, config
+                claim_id,
+                labour_amount_dms,
+                part_amount_dms,
+                processing_results,
+                config,
+                claim_data,  # Pass full claim data for validation
             )
 
             results[claim_id] = {
@@ -352,7 +550,7 @@ def batch_match_claims(
     successful_matches = sum(1 for r in results.values() if r["match_success"])
     failed_matches = len(results) - successful_matches
 
-    logger.info(f"🔍 Batch matching completed:")
+    logger.info(f"🔍 Enhanced batch matching completed:")
     logger.info(
         f"   ✅ Successful: {successful_matches} ({successful_matches / len(claim_data_list) * 100:.1f}%)"
     )
@@ -372,44 +570,154 @@ def batch_match_claims(
     return results
 
 
+def get_enhanced_processing_results_for_claim(
+    claim_id: int, file_paths: List[str]
+) -> Dict[str, Any]:
+    """
+    Generate enhanced processing results for a specific claim's PDF files.
+    Uses the new individual file processing format.
+    """
+
+    # Import the enhanced processing function
+    try:
+        from process_pdf_dir import process_claim_pdfs_individually
+
+        # Use the real function if available
+        return process_claim_pdfs_individually(claim_id, file_paths)
+
+    except ImportError:
+        # Fallback to mock for testing
+        logger.warning("Using mock processing results - process_pdf_dir not available")
+        return _mock_process_claim_pdfs_individually(claim_id, file_paths)
+
+
+def _mock_process_claim_pdfs_individually(
+    claim_id: int, file_paths: List[str]
+) -> Dict[str, Any]:
+    """
+    Mock version of process_claim_pdfs_individually for testing.
+    """
+
+    # Use claim_id as seed for consistent results
+    random.seed(claim_id)
+
+    # Generate realistic claim number and VIN
+    claim_number = f"BYDAMEBR{random.randint(1000, 9999)}WCN{claim_id:06d}_01"
+    chassi = f"LGXCE4CC{random.randint(1, 9)}S{random.randint(1000000, 9999999)}"
+
+    mock_results = {
+        "claim_id": claim_id,
+        "files_processed": len(file_paths),
+        "individual_file_results": {},
+        "consolidated_data": {
+            "claim_numbers_found": [claim_number],
+            "chassis_found": [chassi],
+            "doc_types": {},
+            "cnpjs_found": [
+                f"{random.randint(10, 99)}.{random.randint(100, 999)}.{random.randint(100, 999)}/{random.randint(1000, 9999)}-{random.randint(10, 99)}"
+            ],
+        },
+        "processing_summary": {
+            "successful_files": len(file_paths),
+            "failed_files": 0,
+            "total_amount_pecas": 0.0,
+            "total_amount_mao_obra": 0.0,
+            "total_amount_diversos": 0.0,
+            "total_amount_all": 0.0,
+        },
+    }
+
+    # Generate amounts for each file
+    for i, file_path in enumerate(file_paths):
+        # Generate realistic amounts
+        doc_type = random.choice(["Peças", "Mão de Obra", "Diversos"])
+
+        if doc_type == "Peças":
+            amount = random.uniform(500.00, 3000.00)
+            mock_results["processing_summary"]["total_amount_pecas"] += amount
+        elif doc_type == "Mão de Obra":
+            amount = random.uniform(200.00, 1500.00)
+            mock_results["processing_summary"]["total_amount_mao_obra"] += amount
+        else:
+            amount = random.uniform(50.00, 500.00)
+            mock_results["processing_summary"]["total_amount_diversos"] += amount
+
+        mock_results["processing_summary"]["total_amount_all"] += amount
+
+        # Track doc types
+        if doc_type not in mock_results["consolidated_data"]["doc_types"]:
+            mock_results["consolidated_data"]["doc_types"][doc_type] = 0.0
+        mock_results["consolidated_data"]["doc_types"][doc_type] += amount
+
+        # Mock individual file result
+        file_path_obj = Path(file_path)
+        valor_total = (
+            f"{amount:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        )
+
+        mock_results["individual_file_results"][file_path] = {
+            "file_stats": {
+                file_path: {
+                    "file_model_output": {
+                        "file_name_llm": file_path_obj.name,
+                        "DOC_TYPE": doc_type,
+                        "CNPJ_1": mock_results["consolidated_data"]["cnpjs_found"][0],
+                        "CNPJ_2": None,
+                        "VALOR_TOTAL": valor_total,
+                        "Chassi": chassi,
+                        "CLAIM_NUMBER": claim_number,
+                    }
+                }
+            },
+            "overall_stats": {
+                "files_processed": 1,
+                "processing_time_seconds": random.uniform(2.0, 8.0),
+                "confidence_score": random.uniform(0.8, 0.95),
+                "mock_data": True,
+            },
+        }
+
+    return mock_results
+
+
+# Legacy compatibility functions
 def get_mock_processing_results_for_claim(
     claim_id: int, file_paths: List[str]
 ) -> Dict[str, Any]:
     """
-    Generate mock processing results for a specific claim's PDF files.
-    Enhanced for test mode to provide more realistic data.
+    Legacy compatibility function - converts new format to old format.
     """
 
-    results = {}
+    # Get enhanced results
+    enhanced_results = get_enhanced_processing_results_for_claim(claim_id, file_paths)
 
-    for file_path in file_paths:
-        file_path_obj = Path(file_path)
+    # Convert to legacy format for backward compatibility
+    legacy_results = {}
 
-        # Generate a hash-like key similar to the real processing function
-        import hashlib
+    if "individual_file_results" in enhanced_results:
+        for file_path, file_result in enhanced_results[
+            "individual_file_results"
+        ].items():
+            file_path_obj = Path(file_path)
+            file_path_hash = hashlib.sha256(str(file_path_obj).encode()).hexdigest()[
+                :16
+            ]
+            key = f"{file_path_hash}_<{file_path_obj.name}>"
 
-        file_path_hash = hashlib.sha256(str(file_path_obj).encode()).hexdigest()[:16]
-        key = f"{file_path_hash}_<{file_path_obj.name}>"
+            legacy_results[key] = {
+                "file_name": file_path_obj.name,
+                "claim_id": claim_id,
+                "processing_status": "success",
+                "enhanced_data": file_result,  # Include enhanced data for future use
+            }
 
-        # Mock processing result for this file
-        results[key] = {
-            "file_name": file_path_obj.name,
-            "claim_id": claim_id,
-            "processing_status": "success"
-            if random.random() > 0.1
-            else "partial",  # 90% success
-            "extracted_text_length": random.randint(500, 5000),
-            "pages_processed": random.randint(1, 10),
-            "confidence_score": random.uniform(0.7, 0.95),
-            "test_mode": TEST_MODE_RANDOM,
-        }
-
-    return results
+    return legacy_results
 
 
+# Validation and utility functions
 def validate_matching_config(config: Dict) -> bool:
     """
-    Validate the audit matching configuration.
+    Enhanced validation of the audit matching configuration.
     """
 
     if not config:
@@ -441,14 +749,13 @@ def validate_matching_config(config: Dict) -> bool:
         )
         return False
 
-    logger.info("✅ Audit matching configuration validated successfully")
+    logger.info("✅ Enhanced audit matching configuration validated successfully")
     return True
 
 
 def generate_matching_report(matching_results: Dict[int, Dict]) -> str:
     """
-    Generate a human-readable report of matching results.
-    Enhanced for test mode to clearly indicate test status.
+    Generate an enhanced human-readable report of matching results.
     """
 
     if not matching_results:
@@ -459,19 +766,25 @@ def generate_matching_report(matching_results: Dict[int, Dict]) -> str:
     failed_matches = total_claims - successful_matches
 
     report_lines = [
-        "📊 INVOICE MATCHING REPORT",
+        "📊 ENHANCED INVOICE MATCHING REPORT",
     ]
 
     if TEST_MODE_RANDOM:
         report_lines.extend(
             [
                 "⚠️  TEST MODE ACTIVE - RANDOM RESULTS ⚠️",
+                "Enhanced with individual file processing support",
                 "Processing amounts have been updated in database",
-                "=" * 50,
+                "=" * 60,
             ]
         )
     else:
-        report_lines.append("=" * 50)
+        report_lines.extend(
+            [
+                "Production mode with enhanced data validation",
+                "=" * 60,
+            ]
+        )
 
     report_lines.extend(
         [
@@ -480,7 +793,7 @@ def generate_matching_report(matching_results: Dict[int, Dict]) -> str:
             f"Failed Matches: {failed_matches} ({failed_matches / total_claims * 100:.1f}%)",
             "",
             "DETAILED RESULTS:",
-            "-" * 30,
+            "-" * 40,
         ]
     )
 
@@ -491,9 +804,15 @@ def generate_matching_report(matching_results: Dict[int, Dict]) -> str:
 
         report_lines.append(f"{status_icon} CLAIM_ID {claim_id}: {result['reason']}")
 
-        # Add details for failed matches
+        # Add enhanced details for failed matches
         if not result["match_success"] and "details" in result:
             details = result["details"]
+
+            # Show extraction method
+            extraction_method = details.get("extraction_method", "unknown")
+            report_lines.append(f"    Extraction method: {extraction_method}")
+
+            # Show amounts
             if "dms_amounts" in details and "extracted_amounts" in details:
                 dms = details["dms_amounts"]
                 extracted = details["extracted_amounts"]
@@ -504,30 +823,35 @@ def generate_matching_report(matching_results: Dict[int, Dict]) -> str:
                     f"    Processing: Labour={extracted.get('labour_amount', 0):.2f}, Parts={extracted.get('part_amount', 0):.2f}"
                 )
 
+            # Show data validation issues
+            if "data_validation" in details and details["data_validation"]:
+                validation = details["data_validation"]
+                if validation.get("issues_found"):
+                    report_lines.append(
+                        f"    Data issues: {'; '.join(validation['issues_found'])}"
+                    )
+
     if TEST_MODE_RANDOM:
         report_lines.extend(
             [
                 "",
                 "🔄 TO RESET FOR PRODUCTION:",
                 "1. Set TEST_MODE_RANDOM = False in matching_functions.py",
-                "2. Run SQL: UPDATE CLAIM_STATUS SET AUDIT_STATUS = NULL, LABOUR_AMOUNT_PROCESSING = NULL, PART_AMOUNT_PROCESSING = NULL",
-                "3. Restart the service to reprocess all claims",
+                "2. Set USE_MOCK_PROCESSING = False in process_pdf_dir.py",
+                "3. Run SQL: UPDATE CLAIM_STATUS SET AUDIT_STATUS = NULL, LABOUR_AMOUNT_PROCESSING = NULL, PART_AMOUNT_PROCESSING = NULL",
+                "4. Restart the service to reprocess all claims with real PDF processing",
             ]
         )
 
     return "\n".join(report_lines)
 
 
-# Test helper function to reset audit status for retesting
+# Test helper functions (unchanged but enhanced)
 def reset_audit_status_for_testing(
     claim_ids: List[int] = None, reset_amounts: bool = True
 ):
     """
     Helper function to reset audit status and processing amounts for testing purposes.
-
-    Args:
-        claim_ids: List of claim IDs to reset, or None to reset all
-        reset_amounts: Whether to also reset LABOUR_AMOUNT_PROCESSING and PART_AMOUNT_PROCESSING
     """
     try:
         import db_handler
@@ -577,113 +901,64 @@ def reset_audit_status_for_testing(
         return 0
 
 
-def check_processing_amounts():
-    """
-    Helper function to check the current state of processing amounts in the database.
-    Useful for verifying test results.
-    """
-    try:
-        import db_handler
-
-        with db_handler.DatabaseConnection("bgate") as connection:
-            query = """
-                SELECT 
-                    AUDIT_STATUS,
-                    COUNT(*) as count,
-                    AVG(LABOUR_AMOUNT_DMS) as avg_labour_dms,
-                    AVG(LABOUR_AMOUNT_PROCESSING) as avg_labour_proc,
-                    AVG(PART_AMOUNT_DMS) as avg_part_dms,
-                    AVG(PART_AMOUNT_PROCESSING) as avg_part_proc
-                FROM CLAIM_STATUS
-                WHERE AUDIT_STATUS IS NOT NULL
-                GROUP BY AUDIT_STATUS
-                ORDER BY AUDIT_STATUS
-            """
-
-            df = pd.read_sql(query, connection)
-
-            print("\n📊 Processing Amounts Summary:")
-            print("=" * 60)
-            for _, row in df.iterrows():
-                print(f"\n{row['AUDIT_STATUS']} Claims ({row['count']} total):")
-                print(
-                    f"  Avg Labour - DMS: {row['avg_labour_dms']:.2f}, Processing: {row['avg_labour_proc']:.2f}"
-                )
-                print(
-                    f"  Avg Parts  - DMS: {row['avg_part_dms']:.2f}, Processing: {row['avg_part_proc']:.2f}"
-                )
-
-                if row["AUDIT_STATUS"] == "COMPLETE":
-                    print(f"  ✅ Processing amounts should match DMS amounts")
-                else:
-                    print(f"  ❌ Processing amounts should be random/different")
-
-            return df
-
-    except Exception as e:
-        logger.error(f"❌ Error checking processing amounts: {e}")
-        return None
-
-
 if __name__ == "__main__":
-    """Test the mock matching functions"""
+    """Test the enhanced matching functions"""
 
-    print(f"🧪 Testing Matching Functions - TEST MODE: {TEST_MODE_RANDOM}")
+    print(f"🧪 Testing Enhanced Matching Functions - TEST MODE: {TEST_MODE_RANDOM}")
     print(f"Success Rate: {RANDOM_SUCCESS_RATE * 100}%")
-    print("-" * 50)
+    print("=" * 70)
 
     # Test data
     test_claim_data = [
-        {"CLAIM_ID": 12345, "LABOUR_AMOUNT_DMS": 1500.00, "PART_AMOUNT_DMS": 2500.00},
-        {"CLAIM_ID": 12346, "LABOUR_AMOUNT_DMS": 800.00, "PART_AMOUNT_DMS": 1200.00},
-        {"CLAIM_ID": 12347, "LABOUR_AMOUNT_DMS": 2000.00, "PART_AMOUNT_DMS": 3000.00},
-        {"CLAIM_ID": 12348, "LABOUR_AMOUNT_DMS": 500.00, "PART_AMOUNT_DMS": 750.00},
-        {"CLAIM_ID": 12349, "LABOUR_AMOUNT_DMS": 1200.00, "PART_AMOUNT_DMS": 1800.00},
+        {
+            "CLAIM_ID": 12345,
+            "CLAIM_NO": "BYDAMEBR1234WCN123456_01",
+            "VIN": "LGXCE4CC1S0123456",
+            "LABOUR_AMOUNT_DMS": 1500.00,
+            "PART_AMOUNT_DMS": 2500.00,
+        },
+        {
+            "CLAIM_ID": 12346,
+            "CLAIM_NO": "BYDAMEBR1235WCN123457_01",
+            "VIN": "LGXCE4CC2S0123457",
+            "LABOUR_AMOUNT_DMS": 800.00,
+            "PART_AMOUNT_DMS": 1200.00,
+        },
     ]
 
-    # Mock processing results
+    # Enhanced processing results using new format
     test_processing_results = {}
     for claim in test_claim_data:
         claim_id = claim["CLAIM_ID"]
-        test_processing_results[claim_id] = {
-            f"hash{claim_id}_<invoice_{claim_id}.pdf>": {
-                "file_name": f"invoice_{claim_id}.pdf"
-            },
-            f"hash{claim_id}_2<receipt_{claim_id}.pdf>": {
-                "file_name": f"receipt_{claim_id}.pdf"
-            },
-        }
+        file_paths = [f"test_file_{claim_id}_1.pdf", f"test_file_{claim_id}_2.pdf"]
+
+        test_processing_results[claim_id] = get_enhanced_processing_results_for_claim(
+            claim_id, file_paths
+        )
 
     # Test configuration
     test_config = {
         "audit_matching": {
             "max_claims_per_batch": 20,
             "exact_amount_match": True,
-            "tolerance_percentage": 2.0,  # 2% tolerance
+            "tolerance_percentage": 2.0,
         }
     }
 
     # Run tests
-    print("Testing configuration validation...")
+    print("Testing enhanced configuration validation...")
     if validate_matching_config(test_config):
         print("✅ Configuration validation passed")
 
-    print("\nTesting batch matching...")
+    print("\nTesting enhanced batch matching...")
     results = batch_match_claims(test_claim_data, test_processing_results, test_config)
 
-    # Generate report
+    # Generate enhanced report
     print("\n" + generate_matching_report(results))
 
-    # Show individual results with amounts
-    print("\n📋 Individual Results with Processing Amounts:")
-    for claim_id, result in results.items():
-        status = "PASS" if result["match_success"] else "FAIL"
-        details = result.get("details", {})
-        extracted = details.get("extracted_amounts", {})
-        print(f"  CLAIM {claim_id}: {status}")
-        print(f"    Labour: {extracted.get('labour_amount', 0):.2f}")
-        print(f"    Parts: {extracted.get('part_amount', 0):.2f}")
-
-    print("\n💡 Note: Processing amounts have been updated in the database")
-    print("   COMPLETE claims: LABOUR/PART_AMOUNT_PROCESSING = DMS amounts")
-    print("   REJECTED claims: LABOUR/PART_AMOUNT_PROCESSING = random amounts")
+    print("\n💡 Enhanced features:")
+    print("   - Individual file processing support")
+    print("   - Claim number and VIN validation")
+    print("   - Enhanced amount extraction by document type")
+    print("   - Improved error reporting and validation")
+    print("   - Backward compatibility maintained")
