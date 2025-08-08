@@ -876,6 +876,9 @@ if __name__ == "__main__":
             if not os.path.isabs(storage_path):
                 raise ValueError(f"Storage path must be absolute: {storage_path}")
 
+        if db_handler._ENVIRONMENT_MODE == "local":
+            storage_path = "./pdf-claims"
+
         # Create storage directory if it doesn't exist
         os.makedirs(storage_path, exist_ok=True)
         logger.info(f"Storage directory confirmed: {storage_path}")

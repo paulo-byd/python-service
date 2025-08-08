@@ -46,4 +46,3 @@ if __name__ == "__main__":
     # Print the JSON dictionary in a nicely formatted way
     print("\n--- JSON Results ---")
     print(json.dumps(json.loads(pdf_results_json), indent=4, sort_keys=True))
-
