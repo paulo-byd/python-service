@@ -1,4 +1,5 @@
 import os
+from typing import Dict
 import requests
 import pandas as pd
 from datetime import datetime, timedelta
@@ -877,7 +878,7 @@ def run_batch_audit_matching_enhanced(max_claims=None):
 
 
 def extract_amounts_from_processing_results(
-    processing_results: Dict[str, Any],
+    processing_results: Dict,
 ) -> Dict[str, float]:
     """
     Extract financial amounts from PDF processing results.
