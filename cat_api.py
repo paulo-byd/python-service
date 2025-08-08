@@ -121,23 +121,24 @@ async def get_claims_data(
 
     if claim_no: 
         conditions.append("cs.CLAIM_NO IN (:claim_no)")
-        params["claim_no"] = ','.join(claim_no)
+        params["claim_no"] = claim_no
 
     if vin:
         conditions.append("cs.VIN IN (:vin)")
         params["vin"] = ','.join(vin)
-
+    print(f"DEALER CODE: {dealer_code}")
     if dealer_code:
+        logger.info(f"Received dealer_code: {dealer_code}")
         conditions.append("cs.DEALER_CODE IN (:dealer_code)")
-        params["dealer_code"] = ','.join(dealer_code)
+        params["dealer_code"] = dealer_code
     
     if attachment_status:
         conditions.append("cs.ATTACHMENT_STATUS IN (:attachment_status)")
-        params["attachment_status"] = ','.join(attachment_status.split(','))
+        params["attachment_status"] = attachment_status
     
     if audit_status:
         conditions.append("cs.AUDIT_STATUS IN (:audit_status)")
-        params["audit_status"] = ','.join(audit_status.split(','))
+        params["audit_status"] = audit_status
 
     # Expected to receive the dates in the format: 'YYYY-MM-DD'
 
@@ -155,20 +156,19 @@ async def get_claims_data(
         end_date = datetime.datetime.strptime(bgate_last_processed_date_end, "%Y-%m-%d") + datetime.timedelta(days=1)
         params["last_modified_date_start"] = start_date
         params["last_modified_date_end"] = end_date
+    if conditions:
+        query += " WHERE " + " AND ".join(conditions)
 
+    query += " ORDER BY cs.LAST_MODIFIED_DATE DESC"
 
-    result = db.get(query, None)
+    query += " FETCH FIRST 20 ROWS ONLY"
+
+    logger.info(f"Executing query: {query}")
+    logger.info(f"Parameters: {params}")
+
+    result = db.get(query, params)
 
     return result
-
-    # if conditions:
-    #     query += " WHERE " + " AND ".join(conditions)
-        
-    # query += " ORDER BY ls.LOG_DATE DESC, ls.DEALER_CODE"
-    
-    # logger.info(f"Executing query: {query}")
-    # logger.info(f"Parameters: {params}")
-
 
 
 if __name__ == "__main__":
@@ -179,9 +179,9 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    env_mode = args.env
+    env_mode = 'local'
 
-    logger.info(f"Chosen environment: {str(args.env).upper()}")
+    logger.info(f"Chosen environment: {str(env_mode).upper()}")
 
     db = Database(env_mode)
     db.test_connection()
