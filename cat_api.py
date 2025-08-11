@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Form
+from fastapi import FastAPI, Form, Query
 from contextlib import asynccontextmanager
 import logging
 import argparse
@@ -95,23 +95,23 @@ async def root():
 
 @app.get("/claims")
 async def get_claims_data(
-    claim_no: str = Form(default=None),
-    vin: str = Form(default=None),
-    dealer_code: str = Form(default=None),
+    claim_no: str = Query(default=None),
+    vin: str = Query(default=None),
+    dealer_code: str = Query(default=None),
 
     #Status Params
-    attachment_status: str = Form(default=None),
-    audit_status: str = Form(default=None),
+    attachment_status: str = Query(default=None),
+    audit_status: str = Query(default=None),
 
     #Date Params
-    bgate_last_processed_date_start: str = Form(default=None),
-    bgate_last_processed_date_end: str = Form(default=None)
+    bgate_last_processed_date_start: str = Query(default=None),
+    bgate_last_processed_date_end: str = Query(default=None)
    
 ):
     """Returns Claims Status data"""
 
     query = """SELECT 
-            CLAIM_NO,VIN,DEALER_CODE,DEALER_NAME,REPORT_DATE,GROSS_CREDIT,LABOUR_AMOUNT_DMS,PART_AMOUNT_DMS,TOTAL_FILES_COUNT,DOWNLOADED_FILES_COUNT,LAST_DMS_UPDATE_DATE,AUDITING_DATE,ATTACHMENT_STATUS,AUDIT_STATUS,CREATED_BY,CREATED_DATE,LAST_MODIFIED_BY,LAST_MODIFIED_DATE,LABOUR_AMOUNT_PROCESSING,PART_AMOUNT_PROCESSING
+            CLAIM_NO,VIN,DEALER_CODE,DEALER_NAME,LAST_MODIFIED_DATE
             FROM CLAIM_STATUS cs
     """
 
@@ -120,35 +120,58 @@ async def get_claims_data(
     params = {}
 
     if claim_no: 
-        conditions.append("cs.CLAIM_NO IN (:claim_no)")
-        params["claim_no"] = claim_no
+
+        claim_list = claim_no.replace(' ', '').split(',')
+        placeholders = ", ".join([f':claim_no{i}' for i in range(len(claim_list))])
+
+        conditions.append(f"cs.CLAIM_NO IN ({placeholders})")
+        for i, claim in enumerate(claim_list):
+            params[f'claim_no{i}'] = claim
 
     if vin:
-        conditions.append("cs.VIN IN (:vin)")
-        params["vin"] = ','.join(vin)
-    print(f"DEALER CODE: {dealer_code}")
-    if dealer_code:
-        logger.info(f"Received dealer_code: {dealer_code}")
-        conditions.append("cs.DEALER_CODE IN (:dealer_code)")
-        params["dealer_code"] = dealer_code
+
+        vin_list = vin.replace(' ', '').split(',')
+        placeholders = ", ".join([f':vin{i}' for i in range(len(vin_list))])
+
+        conditions.append(f"cs.VIN IN ({placeholders})")
+        for i, v in enumerate(vin_list):
+            params[f'vin{i}'] = v
+
+    if dealer_code:  # Example: "BYDAMEBR0015W, BYDAMEBR0020W,BYDAMEBR0030W"
+         
+        dealer_code_list = [code.strip() for code in dealer_code.split(',')] #  ['BYDAMEBR0015W','BYDAMEBR0020W','BYDAMEBR0030W']
+        placeholders = ", ".join([f":dealer_code{i}" for i in range(len(dealer_code_list))]) # (:dealer_code_0, :dealer_code_1, :dealer_code_2)
+        conditions.append(f"cs.DEALER_CODE IN ({placeholders})")
+
+        for i, code in enumerate(dealer_code_list):
+            params[f"dealer_code{i}"] = code
     
     if attachment_status:
-        conditions.append("cs.ATTACHMENT_STATUS IN (:attachment_status)")
-        params["attachment_status"] = attachment_status
+
+        attachment_status_list = [status.strip() for status in attachment_status.split(',')] 
+        placeholders = ", ".join([f":attachment_status{i}" for i in range(len(attachment_status_list))])
+        conditions.append(f"cs.ATTACHMENT_STATUS IN ({placeholders})")
+
+        for i, status in enumerate(attachment_status_list):
+            params[f"attachment_status{i}"] = status
     
     if audit_status:
-        conditions.append("cs.AUDIT_STATUS IN (:audit_status)")
-        params["audit_status"] = audit_status
+
+        audit_status_list = audit_status.replace(' ', '').split(',')
+        placeholders = ", ".join([f':audit_status{i}' for i in range(len(audit_status_list))])
+
+        conditions.append(f"cs.AUDIT_STATUS IN ({placeholders})")
+        for i, status in enumerate(audit_status_list):
+            params[f'audit_status{i}'] = status
 
     # Expected to receive the dates in the format: 'YYYY-MM-DD'
-
     if bgate_last_processed_date_start or bgate_last_processed_date_end:
 
         if not bgate_last_processed_date_start:
                 bgate_last_processed_date_start = "2002-11-21"
 
         if not bgate_last_processed_date_end:
-            bgate_last_processed_date_end = datetime.datetime.today().date()
+            bgate_last_processed_date_end = str(datetime.datetime.today().date())
         
         conditions.append("cs.LAST_MODIFIED_DATE BETWEEN :last_modified_date_start AND :last_modified_date_end")
         
@@ -160,8 +183,6 @@ async def get_claims_data(
         query += " WHERE " + " AND ".join(conditions)
 
     query += " ORDER BY cs.LAST_MODIFIED_DATE DESC"
-
-    query += " FETCH FIRST 20 ROWS ONLY"
 
     logger.info(f"Executing query: {query}")
     logger.info(f"Parameters: {params}")
@@ -176,6 +197,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Specify the running environment")
 
     parser.add_argument('--env', type=str, required=True, help='Select one of the environments: local, uat or prod')
+    parser.add_argument('--reload', type=str, required=False, help='Enables hot reloading for uvicorn development')
+
 
     args = parser.parse_args()
 
@@ -186,4 +209,4 @@ if __name__ == "__main__":
     db = Database(env_mode)
     db.test_connection()
 
-    uvicorn.run(app, host="0.0.0.0", port=PORT)
+    uvicorn.run(app, host="0.0.0.0", port=PORT,reload=args.reload)
