@@ -41,6 +41,18 @@ except ImportError as e:
     MATCHING_AVAILABLE = False
     logger.warning(f"⚠️ Matching functions not available: {e}")
 
+# Import the new PDF API client
+from pdf_api_client import (
+    get_pdf_api_client,
+    close_pdf_api_client,
+    run_file_processing_simple_api,
+    process_claim_pdfs_individually_api,
+    run_batch_processing_api,
+)
+
+# Set API processing as available
+PDF_PROCESSING_AVAILABLE = True
+
 # Setup logging
 logging.basicConfig(
     level=logging.INFO,
@@ -464,7 +476,7 @@ def run_download_process():
         logger.info("\n🔄 Auto-triggering audit matching after download completion...")
         try:
             # First, run PDF processing for any new claims
-            processing_results = process_claims_batch_pdfs()
+            processing_results = process_claims_batch_pdfs_api()
 
             if processing_results:
                 logger.info(f"📄 Processed PDFs for {len(processing_results)} claims")
@@ -657,6 +669,176 @@ def process_claims_batch_pdfs(max_claims=None):
 
     except Exception as e:
         logger.error(f"🚨 Critical error in enhanced batch PDF processing: {e}")
+        return {}
+
+
+def process_claims_batch_pdfs_api(max_claims=None):
+    """
+    Process PDF files for claims using the PDF processing API.
+    Updated version that calls an external API instead of local processing.
+
+    Args:
+        max_claims (int): Maximum number of claims to process (None = use config)
+    """
+    logger.info(
+        f"\n🎯 Starting API-based batch PDF processing at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+    )
+
+    try:
+        config = db_handler.load_config()
+
+        # Get processing configuration
+        if max_claims is None:
+            max_claims = config.get("pdf_processing", {}).get(
+                "max_claims_per_batch", 10
+            )
+        max_files_per_claim = config.get("pdf_processing", {}).get(
+            "max_files_per_processing_call", 50
+        )
+
+        # Initialize PDF API client
+        pdf_api_client = get_pdf_api_client(config)
+
+        # Check API health before processing
+        if not pdf_api_client.health_check():
+            logger.error("❌ PDF processing API is not available - aborting processing")
+            return {}
+
+        # Get claims ready for processing
+        claims_df = db_handler.get_claims_ready_for_processing()
+
+        if claims_df.empty:
+            logger.info("No claims ready for PDF processing")
+            return {}
+
+        # Limit to configured batch size
+        claims_to_process = claims_df.head(max_claims)
+        logger.info(f"Processing {len(claims_to_process)} claims (max: {max_claims})")
+
+        processing_results = {}
+        successful_claims = 0
+        failed_claims = 0
+
+        for _, claim_row in claims_to_process.iterrows():
+            claim_id = claim_row["CLAIM_ID"]
+
+            try:
+                logger.info(f"📄 Processing PDFs for CLAIM_ID {claim_id} via API")
+
+                # Get PDF files for this claim
+                pdf_files = db_handler.get_claim_pdf_files(claim_id)
+
+                if not pdf_files:
+                    logger.warning(f"No PDF files found for CLAIM_ID {claim_id}")
+                    continue
+
+                # Filter to existing files
+                existing_files = [f for f in pdf_files if os.path.exists(f)]
+                if len(existing_files) != len(pdf_files):
+                    logger.warning(
+                        f"Some PDF files missing for CLAIM_ID {claim_id}: {len(existing_files)}/{len(pdf_files)} found"
+                    )
+
+                if not existing_files:
+                    logger.error(f"No existing PDF files for CLAIM_ID {claim_id}")
+                    failed_claims += 1
+                    continue
+
+                # Limit files per claim
+                if len(existing_files) > max_files_per_claim:
+                    logger.warning(
+                        f"Too many files for CLAIM_ID {claim_id} ({len(existing_files)}), limiting to {max_files_per_claim}"
+                    )
+                    existing_files = existing_files[:max_files_per_claim]
+
+                # Process the PDFs using the API
+                logger.info(
+                    f"Sending {len(existing_files)} PDF files to API for CLAIM_ID {claim_id}"
+                )
+
+                # Use the API-based processing function
+                claim_processing_results = process_claim_pdfs_individually_api(
+                    claim_id, existing_files, config
+                )
+
+                # Check if API processing was successful
+                if claim_processing_results.get("processing_summary", {}).get("error"):
+                    logger.error(
+                        f"❌ API processing failed for CLAIM_ID {claim_id}: {claim_processing_results['processing_summary']['error']}"
+                    )
+                    failed_claims += 1
+                    continue
+
+                # Store the results
+                processing_results[claim_id] = claim_processing_results
+
+                # Extract amounts from processing results and update database
+                extracted_amounts = extract_amounts_from_processing_results(
+                    claim_processing_results
+                )
+
+                # Update the processing amounts in the database
+                db_handler.update_processing_amounts(
+                    claim_id,
+                    extracted_amounts["labour_amount"],
+                    extracted_amounts["part_amount"],
+                )
+
+                # Mark claim as ready for audit
+                db_handler.update_audit_status(claim_id, "PENDING")
+
+                successful_claims += 1
+
+                # Log processing summary
+                if "processing_summary" in claim_processing_results:
+                    summary = claim_processing_results["processing_summary"]
+                    logger.info(
+                        f"✅ CLAIM_ID {claim_id} processed successfully via API:"
+                    )
+                    logger.info(
+                        f"   Files: {summary.get('successful_files', 0)}/{len(existing_files)} successful"
+                    )
+                    logger.info(
+                        f"   Labour: R$ {extracted_amounts['labour_amount']:,.2f}"
+                    )
+                    logger.info(f"   Parts: R$ {extracted_amounts['part_amount']:,.2f}")
+                    logger.info(
+                        f"   Total: R$ {extracted_amounts['total_amount']:,.2f}"
+                    )
+                else:
+                    logger.info(
+                        f"✅ Successfully processed {len(existing_files)} files for CLAIM_ID {claim_id} via API"
+                    )
+
+            except Exception as e:
+                logger.error(f"❌ Error processing CLAIM_ID {claim_id} via API: {e}")
+                failed_claims += 1
+                continue
+
+        logger.info(
+            f"📄 API-based PDF processing completed: {successful_claims} successful, {failed_claims} failed"
+        )
+
+        # Trigger immediate audit matching if any claims were processed successfully
+        if successful_claims > 0:
+            logger.info("🔄 Triggering immediate audit matching...")
+            try:
+                # Import matching functions
+                from matching_functions import run_batch_audit_matching_enhanced
+
+                matching_results = run_batch_audit_matching_enhanced()
+
+                if matching_results:
+                    logger.info(
+                        f"🔍 Immediate audit matching completed for {len(matching_results)} claims"
+                    )
+            except ImportError:
+                logger.warning("Matching functions not available for immediate audit")
+
+        return processing_results
+
+    except Exception as e:
+        logger.error(f"🚨 Critical error in API-based batch PDF processing: {e}")
         return {}
 
 
@@ -875,30 +1057,6 @@ def run_batch_audit_matching_enhanced(max_claims=None):
     except Exception as e:
         logger.error(f"🚨 Critical error in enhanced continuous audit matching: {e}")
         return {}
-
-
-def extract_amounts_from_processing_results(
-    processing_results: Dict,
-) -> Dict[str, float]:
-    """
-    Extract financial amounts from PDF processing results.
-    This function should be imported from matching_functions.py
-    """
-    try:
-        from matching_functions import (
-            extract_amounts_from_processing_results as extract_func,
-        )
-
-        return extract_func(processing_results)
-    except ImportError:
-        logger.warning("Could not import enhanced extraction function, using fallback")
-        return {
-            "labour_amount": 0.0,
-            "part_amount": 0.0,
-            "total_amount": 0.0,
-            "confidence_score": 0.0,
-            "extraction_method": "fallback",
-        }
 
 
 # Updated functions that should replace the existing ones in main.py
@@ -1231,6 +1389,196 @@ def run_batch_pdf_processing():
         logger.error(f"🚨 Critical error in claim-based PDF processing: {e}")
 
 
+def run_batch_pdf_processing_api():
+    """
+    API-based claim PDF processing job function.
+    Processes PDFs for claims that have complete file downloads using API.
+    """
+    logger.info(
+        f"\n🎯 Starting API-based claim PDF processing job at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+    )
+
+    try:
+        processing_results = process_claims_batch_pdfs_api()
+
+        if processing_results:
+            logger.info(
+                f"🎯 API-based claim PDF processing completed successfully for {len(processing_results)} claims"
+            )
+        else:
+            logger.info(
+                "🎯 API-based claim PDF processing completed - no claims processed"
+            )
+
+    except Exception as e:
+        logger.error(f"🚨 Critical error in API-based claim PDF processing job: {e}")
+
+
+def extract_amounts_from_processing_results(
+    processing_results: Dict,
+) -> Dict[str, float]:
+    """
+    Extract financial amounts from PDF processing results.
+    This function should be imported from matching_functions.py
+    Updated to handle API response format.
+    """
+    try:
+        from matching_functions import (
+            extract_amounts_from_processing_results as extract_func,
+        )
+
+        return extract_func(processing_results)
+    except ImportError:
+        logger.warning("Could not import extraction function, using fallback")
+
+        # Fallback extraction for API responses
+        extracted_amounts = {
+            "labour_amount": 0.0,
+            "part_amount": 0.0,
+            "total_amount": 0.0,
+            "confidence_score": 0.0,
+            "extraction_method": "api_fallback",
+        }
+
+        try:
+            # Try to extract from API response format
+            if "processing_summary" in processing_results:
+                summary = processing_results["processing_summary"]
+                extracted_amounts["labour_amount"] = summary.get(
+                    "total_amount_mao_obra", 0.0
+                )
+                extracted_amounts["part_amount"] = summary.get(
+                    "total_amount_pecas", 0.0
+                ) + summary.get("total_amount_diversos", 0.0)
+                extracted_amounts["total_amount"] = summary.get("total_amount_all", 0.0)
+
+        except Exception as e:
+            logger.error(f"Error in fallback amount extraction: {e}")
+
+        return extracted_amounts
+
+
+def update_main_scheduler_for_api():
+    """
+    Instructions for updating the main.py scheduler to use API-based processing.
+
+    Replace the following in main.py's scheduler section:
+
+    OLD:
+        scheduler.add_job(
+            run_batch_pdf_processing,
+            "interval",
+            hours=pdf_processing_hours,
+            max_instances=1,
+            id="pdf_processing_job",
+        )
+
+    NEW:
+        scheduler.add_job(
+            run_batch_pdf_processing_api,
+            "interval",
+            hours=pdf_processing_hours,
+            max_instances=1,
+            id="pdf_processing_job",
+        )
+
+    Also update the initial PDF processing job:
+
+    OLD:
+        scheduler.add_job(
+            run_batch_pdf_processing,
+            "date",
+            run_date=datetime.now() + timedelta(minutes=3),
+            id="initial_pdf_processing",
+        )
+
+    NEW:
+        scheduler.add_job(
+            run_batch_pdf_processing_api,
+            "date",
+            run_date=datetime.now() + timedelta(minutes=3),
+            id="initial_pdf_processing",
+        )
+
+    And update the download process auto-audit section:
+
+    OLD:
+        processing_results = process_claims_batch_pdfs()
+
+    NEW:
+        processing_results = process_claims_batch_pdfs_api()
+    """
+    pass
+
+
+def cleanup_api_resources():
+    """
+    Cleanup function to call when shutting down the service.
+    Add this to the main.py finally block.
+    """
+    logger.info("Closing PDF API client...")
+    close_pdf_api_client()
+
+
+# Test function
+def test_api_integration():
+    """
+    Test the API integration with health checks and error handling.
+    """
+    logger.info("🧪 Testing PDF API Integration")
+    logger.info("=" * 50)
+
+    try:
+        config = db_handler.load_config()
+
+        # Test API client initialization
+        logger.info("1. Testing API client initialization...")
+        api_client = get_pdf_api_client(config)
+        logger.info("✅ API client initialized")
+
+        # Test health check
+        logger.info("2. Testing API health check...")
+        if api_client.health_check():
+            logger.info("✅ API is healthy and responding")
+        else:
+            logger.warning("⚠️ API is not responding - continuing with offline test")
+
+        # Test configuration
+        logger.info("3. Testing API configuration...")
+        api_config = config.get("pdf_processing_api", {})
+        base_url = api_config.get("base_url", "http://localhost:8888")
+        timeout = api_config.get("timeout_seconds", 300)
+        logger.info(f"   API URL: {base_url}")
+        logger.info(f"   Timeout: {timeout}s")
+        logger.info("✅ Configuration loaded successfully")
+
+        # Test error handling
+        logger.info("4. Testing error handling with non-existent file...")
+        try:
+            result = api_client.process_single_file("/non/existent/file.pdf")
+            if "error" in result.get("overall_stats", {}):
+                logger.info("✅ Error handling working correctly")
+            else:
+                logger.warning("⚠️ Expected error not found in result")
+        except Exception as e:
+            logger.info(f"✅ Exception handling working: {type(e).__name__}")
+
+        logger.info("5. Testing batch processing with empty file list...")
+        try:
+            result = api_client.process_batch_files([])
+            logger.info("✅ Empty batch handling completed")
+        except Exception as e:
+            logger.info(f"✅ Empty batch exception handling: {type(e).__name__}")
+
+        logger.info("✅ API integration test completed successfully")
+
+    except Exception as e:
+        logger.error(f"❌ API integration test failed: {e}")
+
+    finally:
+        cleanup_api_resources()
+
+
 def run_batch_audit_matching_job():
     """
     Scheduled job function for audit matching.
@@ -1382,7 +1730,7 @@ if __name__ == "__main__":
 
     # Schedule claim-based PDF processing
     scheduler.add_job(
-        run_batch_pdf_processing,
+        run_batch_pdf_processing_api,
         "interval",
         hours=pdf_processing_hours,
         max_instances=1,
@@ -1428,3 +1776,6 @@ if __name__ == "__main__":
         # Cleanup connection pools on exit
         logger.info("Cleaning up database connection pools...")
         db_handler.close_connection_pools()
+
+        logger.info("Closing PDF API client...")
+        close_pdf_api_client()

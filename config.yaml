@@ -143,3 +143,43 @@ audit_matching:
   exact_amount_match: true  # Require exact match for LABOUR_AMOUNT_DMS + PART_AMOUNT_DMS
   tolerance_percentage: 0.0  # Allow this % tolerance for amount matching (0.0 = exact match)
   retry_rejected_claims: false  # Whether to retry claims that were rejected
+
+# PDF Processing Pipeline Configuration
+pdf_processing:
+  # Batch processing settings
+  max_claims_per_batch: 10        # Process this many claims at a time
+  max_files_per_processing_call: 50  # Pass max this many files to run_batch_processing()
+  
+  # Processing intervals (in hours)
+  interval_hours: 4  # How often to run PDF processing
+  
+  # Processing behavior
+  process_immediately_after_download: false  # If true, process PDFs right after downloading a complete claim
+  skip_failed_claims: true  # Skip claims that failed processing in previous attempts
+
+# PDF Processing API Configuration
+pdf_processing_api:
+  # API connection settings
+  base_url: "http://localhost:8888"  # URL of the PDF processing API
+  timeout_seconds: 300  # 5 minutes timeout for PDF processing requests
+  
+  # Health check settings
+  health_check_interval: 60  # Check API health every 60 seconds
+  max_retries: 3  # Maximum retries for failed API calls
+  retry_delay: 5  # Seconds to wait between retries
+  
+  # Connection settings
+  verify_ssl: true  # Set to false for local development
+  connection_timeout: 30  # Seconds to wait for connection
+  read_timeout: 300  # Seconds to wait for response
+  
+  # API endpoints (for future customization)
+  endpoints:
+    health: "/health"
+    single_file: "/process/single"
+    claim_batch: "/process/claim"
+    batch: "/process/batch"
+  
+  # Error handling
+  continue_on_api_error: true  # Continue processing other claims if API fails for one
+  fallback_to_mock: false  # Set to true for testing when API is down
