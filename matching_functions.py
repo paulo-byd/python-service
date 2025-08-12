@@ -6,13 +6,12 @@ IMPORTANT: Still includes TEST MODE with random results for frontend testing.
 When the real PDF processing is ready, replace this with the production version.
 """
 
-import json
-import random
 import logging
-from pathlib import Path
-from typing import Dict, List, Tuple, Any
-import pandas as pd
+import random
 from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List, Tuple
+
 
 import db_handler
 
@@ -256,7 +255,6 @@ def match_invoices_with_dms_estimates(
     claim_data: Dict[str, Any] = None,
 ) -> Tuple[bool, str, Dict[str, Any]]:
     """
-    ENHANCED VERSION - Now supports individual file processing and data validation.
     Updates LABOUR_AMOUNT_PROCESSING and PART_AMOUNT_PROCESSING in database.
 
     Args:
@@ -481,10 +479,12 @@ def _amounts_match(amount1: float, amount2: float, tolerance: float = 0.0) -> bo
 
 
 def batch_match_claims(
-    claim_data_list: List[Dict], processing_results_dict: Dict, config: Dict = None
+    claim_data_list: List[Dict],
+    processing_results_dict: Dict,
+    config: Dict | None = None,
 ) -> Dict[int, Dict]:
     """
-    ENHANCED - Process multiple claims for invoice matching in batch.
+    Process multiple claims for invoice matching in batch.
     Now supports both legacy and individual file processing formats.
     """
 
@@ -496,10 +496,10 @@ def batch_match_claims(
 
     if TEST_MODE_RANDOM:
         logger.warning(
-            f"⚠️ TEST MODE: Generating random audit results for frontend testing"
+            "⚠️ TEST MODE: Generating random audit results for frontend testing"
         )
-        logger.warning(f"⚠️ Success rate set to {RANDOM_SUCCESS_RATE * 100}%")
-        logger.warning(f"⚠️ Processing amounts will be updated in database")
+        logger.warning("⚠️ Success rate set to {RANDOM_SUCCESS_RATE * 100}%")
+        logger.warning("⚠️ Processing amounts will be updated in database")
 
     for claim_data in claim_data_list:
         claim_id = claim_data["CLAIM_ID"]
@@ -550,7 +550,7 @@ def batch_match_claims(
     successful_matches = sum(1 for r in results.values() if r["match_success"])
     failed_matches = len(results) - successful_matches
 
-    logger.info(f"🔍 Enhanced batch matching completed:")
+    logger.info("🔍 Enhanced batch matching completed:")
     logger.info(
         f"   ✅ Successful: {successful_matches} ({successful_matches / len(claim_data_list) * 100:.1f}%)"
     )
@@ -570,11 +570,11 @@ def batch_match_claims(
     return results
 
 
-def get_enhanced_processing_results_for_claim(
+def get_processing_results_for_claim(
     claim_id: int, file_paths: List[str]
 ) -> Dict[str, Any]:
     """
-    Generate enhanced processing results for a specific claim's PDF files.
+    Generate processing results for a specific claim's PDF files.
     Uses the new individual file processing format.
     """
 
@@ -689,7 +689,7 @@ def get_mock_processing_results_for_claim(
     """
 
     # Get enhanced results
-    enhanced_results = get_enhanced_processing_results_for_claim(claim_id, file_paths)
+    enhanced_results = get_processing_results_for_claim(claim_id, file_paths)
 
     # Convert to legacy format for backward compatibility
     legacy_results = {}
@@ -932,7 +932,7 @@ if __name__ == "__main__":
         claim_id = claim["CLAIM_ID"]
         file_paths = [f"test_file_{claim_id}_1.pdf", f"test_file_{claim_id}_2.pdf"]
 
-        test_processing_results[claim_id] = get_enhanced_processing_results_for_claim(
+        test_processing_results[claim_id] = get_processing_results_for_claim(
             claim_id, file_paths
         )
 
@@ -950,15 +950,8 @@ if __name__ == "__main__":
     if validate_matching_config(test_config):
         print("✅ Configuration validation passed")
 
-    print("\nTesting enhanced batch matching...")
+    print("\nTesting batch matching...")
     results = batch_match_claims(test_claim_data, test_processing_results, test_config)
 
     # Generate enhanced report
     print("\n" + generate_matching_report(results))
-
-    print("\n💡 Enhanced features:")
-    print("   - Individual file processing support")
-    print("   - Claim number and VIN validation")
-    print("   - Enhanced amount extraction by document type")
-    print("   - Improved error reporting and validation")
-    print("   - Backward compatibility maintained")

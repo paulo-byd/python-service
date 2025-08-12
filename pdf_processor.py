@@ -14,7 +14,7 @@ from audit_matcher import extract_amounts_from_processing_results
 logger = logging.getLogger(__name__)
 
 # Mock/local processing availability flags
-PDF_PROCESSING_AVAILABLE = True  # Or determined by imports
+PDF_PROCESSING_AVAILABLE = True
 
 
 def process_claims_batch_pdfs_api(max_claims=None):
@@ -65,7 +65,7 @@ def process_claims_batch_pdfs_api(max_claims=None):
         failed_claims = 0
 
         for _, claim_row in claims_to_process.iterrows():
-            claim_id = claim_row["CLAIM_ID"]
+            claim_id = int(claim_row["CLAIM_ID"])
 
             try:
                 logger.info(f"📄 Processing PDFs for CLAIM_ID {claim_id} via API")
@@ -169,9 +169,9 @@ def process_claims_batch_pdfs_api(max_claims=None):
             logger.info("🔄 Triggering immediate audit matching...")
             try:
                 # Import matching functions
-                from matching_functions import run_batch_audit_matching_enhanced
+                from audit_matcher import run_batch_audit_matching
 
-                matching_results = run_batch_audit_matching_enhanced()
+                matching_results = run_batch_audit_matching()
 
                 if matching_results:
                     logger.info(

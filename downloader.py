@@ -205,7 +205,7 @@ def log_performance_summary():
 
 def run_download_process_sequential():
     """
-    Original sequential download process with performance logging.
+    Sequential download process with performance logging.
     """
     logger.info(
         f"\n🚀 Starting SEQUENTIAL PDF download cycle at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
@@ -238,12 +238,11 @@ def run_download_process_sequential():
                 f"⏱️  Using delay between downloads: {delay_between_downloads} seconds"
             )
 
-        for index, row in files_to_download_df.iterrows():
+        for i, (_, row) in enumerate(files_to_download_df.iterrows()):
             file_id = row["FILE_ID"]
             claim_id = row["CLAIM_ID"]
-            logger.info(f"Processing file n°: {index} / {len(files_to_download_df)}")
             logger.info(
-                f"Processing FILE_ID: {file_id} for CLAIM_ID: {claim_id} ({index + 1}/{len(files_to_download_df)})"
+                f"Processing FILE_ID: {file_id} for CLAIM_ID: {claim_id} ({i + 1}/{len(files_to_download_df)})"
             )
 
             local_path, error, download_time = download_pdf(
@@ -333,7 +332,7 @@ def run_download_process_parallel(max_workers=4):
                 f"⏱️  Using delay between downloads: {delay_between_downloads} seconds"
             )
             logger.info(
-                f"⚠️  Note: In parallel mode, delays are applied per worker thread"
+                "⚠️  Note: In parallel mode, delays are applied per worker thread"
             )
 
         # Use ThreadPoolExecutor for parallel downloads
@@ -415,7 +414,7 @@ def run_download_process():
     else:
         run_download_process_sequential()
 
-    # Enhanced auto-audit with individual file processing
+    # Auto-audit with individual file processing
     auto_audit_enabled = config.get("audit_matching", {}).get(
         "auto_run_after_download", True
     )
@@ -423,35 +422,19 @@ def run_download_process():
     if auto_audit_enabled:
         logger.info("\n🔄 Auto-triggering audit matching after download completion...")
         try:
-            # First, run enhanced PDF processing for any new claims
-            processing_results = process_claims_batch_pdfs()
+            from pdf_processor import run_batch_pdf_processing_api
+            from audit_matcher import run_batch_audit_matching_job
 
-            if processing_results:
-                logger.info(
-                    f"📄 Enhanced processing completed for {len(processing_results)} claims"
-                )
+            logger.info("📄 Starting PDF processing...")
+            run_batch_pdf_processing_api()
 
-                # Run audit matching immediately after PDF processing
-                matching_results = run_batch_audit_matching()
+            logger.info("🔍 Starting audit matching...")
+            run_batch_audit_matching_job()
 
-                if matching_results:
-                    logger.info(
-                        f"🔍 Enhanced audit matching completed for {len(matching_results)} claims"
-                    )
-                else:
-                    logger.info("🔍 No claims were ready for enhanced audit matching")
-            else:
-                logger.info("📄 No claims were processed for enhanced PDFs")
-
-                # Still check if there are any claims ready for audit from previous runs
-                matching_results = run_batch_audit_matching()
-                if matching_results:
-                    logger.info(
-                        f"🔍 Enhanced audit matching completed for {len(matching_results)} claims from previous processing"
-                    )
-
+        except ImportError as e:
+            logger.error(f"❌ Could not import processing functions: {e}")
         except Exception as e:
-            logger.error(f"❌ Error in enhanced auto-audit process: {e}")
+            logger.error(f"❌ Error in auto-audit process: {e}")
 
 
 def auto_recover_failed_downloads():

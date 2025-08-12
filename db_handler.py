@@ -3,7 +3,6 @@ import pandas as pd
 import yaml
 import logging
 import warnings
-from datetime import datetime, timedelta
 
 # Suppress pandas SQLAlchemy warning for Oracle connections
 warnings.filterwarnings("ignore", message="pandas only supports SQLAlchemy connectable")
@@ -142,7 +141,7 @@ def initialize_connection_pools(min_connections=2, max_connections=10):
             raise Exception("BGATE pool was not properly assigned to global variable")
 
         logger.info(
-            f"✅ Connection pools initialized successfully (DMS: direct, BGATE: pooled)"
+            "✅ Connection pools initialized successfully (DMS: direct, BGATE: pooled)"
         )
 
     except Exception as error:
@@ -168,7 +167,7 @@ def get_pool_status():
             logger.info(
                 f"DMS Pool - Open: {_DMS_POOL.opened}, Busy: {_DMS_POOL.busy}, Max: {_DMS_POOL.max}"
             )
-        except:
+        except AttributeError:
             logger.warning("Could not get DMS pool statistics")
     else:
         logger.info("DMS using direct connections (THICK mode)")
@@ -178,7 +177,7 @@ def get_pool_status():
             logger.info(
                 f"BGATE Pool - Open: {_BGATE_POOL.opened}, Busy: {_BGATE_POOL.busy}, Max: {_BGATE_POOL.max}"
             )
-        except:
+        except AttributeError:
             logger.warning("Could not get BGATE pool statistics")
 
 
@@ -222,7 +221,7 @@ class DatabaseConnection:
             self.from_pool = _BGATE_POOL is not None
         return self.connection
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    def __exit__(self, *args):
         if self.connection:
             try:
                 if self.from_pool:
@@ -921,7 +920,7 @@ def get_claims_needing_download():
             batch_size = config.get("database", {}).get("batch_upsert_size", 500)
             logger.info(f"Batch upserting {len(dms_df)} claims...")
             batch_upsert_claim_status(dms_df, batch_size=batch_size)
-            logger.info(f"✅ Batch upsert completed")
+            logger.info("✅ Batch upsert completed")
 
         logger.info(
             f"Returning {len(needs_download)} downloadable claims from {len(dms_df)} total claims"
@@ -934,46 +933,18 @@ def get_claims_needing_download():
         return pd.DataFrame()
 
 
-def get_new_files_to_download(max_claims=1000):
+def get_new_files_to_download(max_claims=None):
     """
-    Gets PDF files for claims that need downloading with robust connection handling and early filtering.
+    Gets PDF files for claims that need downloading.
 
     Args:
         max_claims (int): Maximum number of claims to process in one batch (performance limit)
     """
-    max_retries = 2
-
-    for attempt in range(max_retries):
-        try:
-            return _get_new_files_to_download_impl(max_claims)
-        except Exception as error:
-            if attempt < max_retries - 1 and (
-                "ORA-03113" in str(error) or "ORA-03135" in str(error)
-            ):
-                logger.warning(
-                    f"DMS connection failed on attempt {attempt + 1}, retrying: {error}"
-                )
-                import time
-
-                time.sleep(3)  # Wait before retry
-                continue
-            else:
-                logger.error(
-                    f"❌ Error getting new files to download (attempt {attempt + 1}): {error}"
-                )
-                return pd.DataFrame()
-
-    return pd.DataFrame()
-
-
-def _get_new_files_to_download_impl(max_claims=None):
-    """
-    Internal implementation of get_new_files_to_download with robust connection handling and performance optimization.
-    """
     try:
         # Load config for performance settings
         config = load_config()
-        max_claims = config.get("database", {}).get("max_claims_per_cycle")
+        if max_claims is None:
+            max_claims = config.get("database", {}).get("max_claims_per_cycle")
         batch_size = config.get("database", {}).get("file_query_batch_size", 500)
 
         # First, get claims that need downloading with early filtering
@@ -984,20 +955,22 @@ def _get_new_files_to_download_impl(max_claims=None):
             return pd.DataFrame()
 
         # Limit the number of claims processed in one batch for performance
-        if max_claims:
-            if len(claims_needing_download) > max_claims:
-                logger.info(
-                    f"Limiting processing to {max_claims} claims out of {len(claims_needing_download)} total (configured limit)"
-                )
-                # Sort by priority (most recent updates first)
-                claims_needing_download = claims_needing_download.sort_values(
-                    "UPDATE_DATE", ascending=False
-                ).head(max_claims)
-        else:
-            logger.info("No max_claims configured, processing all claims.")
-            claims_needing_download = claims_needing_download.sort_values(
-                "UPDATE_DATE", ascending=False
+        if max_claims and len(claims_needing_download) > max_claims:
+            logger.info(
+                f"Limiting processing to {max_claims} claims out of {len(claims_needing_download)} total (configured limit)"
             )
+            # Sort by priority (most recent updates first) - fix the pandas type issue
+            claims_needing_download = claims_needing_download.sort_values(
+                by="UPDATE_DATE", ascending=False
+            ).head(max_claims)
+        else:
+            if max_claims is None:
+                logger.info("No max_claims configured, processing all claims.")
+            # Sort by priority - fix the pandas type issue
+            claims_needing_download = claims_needing_download.sort_values(
+                by="UPDATE_DATE", ascending=False
+            )
+
         claim_ids = claims_needing_download["CLAIM_ID"].tolist()
         logger.info(f"Getting files for {len(claim_ids)} claims")
 
@@ -1009,12 +982,7 @@ def _get_new_files_to_download_impl(max_claims=None):
             return pd.DataFrame()
 
         # For each claim that needs downloading, mark old files as obsolete
-        if len(claim_ids) > 1000:
-            logger.info(
-                f"Marking old files as obsolete for {len(claim_ids)} claims (will process in batches due to Oracle limit)..."
-            )
-        else:
-            logger.info(f"Marking old files as obsolete for {len(claim_ids)} claims...")
+        logger.info(f"Marking old files as obsolete for {len(claim_ids)} claims...")
         mark_old_files_obsolete(claim_ids)
 
         # Get PDF files for claims needing download, in smaller batches for better performance
@@ -1094,7 +1062,7 @@ def _get_new_files_to_download_impl(max_claims=None):
             "FILE_NAME",
             "CREATE_DATE",
         ]
-        files_df = pd.DataFrame(all_files, columns=columns)  # type: ignore
+        files_df = pd.DataFrame(all_files, columns=columns)
 
         # Update total file counts for each claim in batches
         logger.info("Updating file counts...")
@@ -1112,8 +1080,8 @@ def _get_new_files_to_download_impl(max_claims=None):
         return files_df
 
     except Exception as error:
-        logger.error(f"❌ Error in _get_new_files_to_download_impl: {error}")
-        raise
+        logger.error(f"❌ Error getting new files to download: {error}")
+        return pd.DataFrame()
 
 
 def batch_update_file_counts(file_counts_df, batch_size=100):
@@ -1170,7 +1138,7 @@ def batch_update_file_counts(file_counts_df, batch_size=100):
             )
             continue
 
-    logger.debug(f"✅ File count updates completed")
+    logger.debug("✅ File count updates completed")
 
 
 def mark_old_files_obsolete(claim_ids):
@@ -1459,7 +1427,7 @@ def log_download_status(
         try:
             if connection:
                 connection.rollback()
-        except:
+        except Exception:
             pass
         # Re-raise to let caller handle
         raise
@@ -1470,7 +1438,7 @@ def log_download_status(
         try:
             if connection:
                 connection.rollback()
-        except:
+        except Exception:
             pass
         raise
     finally:

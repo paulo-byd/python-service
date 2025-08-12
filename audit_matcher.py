@@ -8,12 +8,7 @@ import db_handler
 # Mock/local matching availability flags
 try:
     from matching_functions import (
-        validate_matching_config,
-        batch_match_claims,
-        generate_matching_report,
-        get_mock_processing_results_for_claim,
-        get_enhanced_processing_results_for_claim,
-        extract_amounts_from_processing_results as extract_func,
+        extract_amounts_from_processing_results as extract_func,  # noqa: F401
     )
 
     MATCHING_AVAILABLE = True
@@ -29,7 +24,6 @@ def extract_amounts_from_processing_results(
     """
     Extract financial amounts from PDF processing results.
     This function should be imported from matching_functions.py
-    Updated to handle API response format.
     """
     try:
         from matching_functions import (
@@ -69,7 +63,7 @@ def extract_amounts_from_processing_results(
 
 def run_batch_audit_matching(max_claims=None):
     """
-    Run audit matching with enhanced individual file processing support.
+    Run audit matching with individual file processing support.
     """
     if not MATCHING_AVAILABLE:
         logger.warning("⚠️ Matching functions not available - skipping audit matching")
@@ -111,10 +105,10 @@ def run_batch_audit_matching(max_claims=None):
 
             if claims_df.empty:
                 if batch_number == 1:
-                    logger.info("No claims ready for enhanced audit matching")
+                    logger.info("No claims ready for audit matching")
                 else:
                     logger.info(
-                        f"✅ No more claims ready for enhanced audit matching after processing {total_processed} total claims"
+                        f"✅ No more claims ready for audit matching after processing {total_processed} total claims"
                     )
                 break
 
@@ -125,7 +119,7 @@ def run_batch_audit_matching(max_claims=None):
                 break
 
             logger.info(
-                f"🔍 Processing enhanced batch {batch_number}: {len(batch_claims)} claims"
+                f"🔍 Processing batch {batch_number}: {len(batch_claims)} claims"
             )
 
             # Prepare claim data for enhanced matching
@@ -133,9 +127,9 @@ def run_batch_audit_matching(max_claims=None):
             processing_results_dict = {}
 
             for _, claim_row in batch_claims.iterrows():
-                claim_id = claim_row["CLAIM_ID"]
+                claim_id = int(claim_row["CLAIM_ID"])
 
-                # Add complete claim data for enhanced validation
+                # Add complete claim data for validation
                 claim_data = {
                     "CLAIM_ID": claim_id,
                     "CLAIM_NO": claim_row.get("CLAIM_NO"),
@@ -150,14 +144,14 @@ def run_batch_audit_matching(max_claims=None):
                 # Get enhanced processing results for this claim
                 pdf_files = db_handler.get_claim_pdf_files(claim_id)
 
-                # Try to get real processing results, fallback to enhanced mock
+                # Try to get real processing results, fallback to mock
                 try:
                     from matching_functions import (
-                        get_enhanced_processing_results_for_claim,
+                        get_processing_results_for_claim,
                     )
 
                     processing_results_dict[claim_id] = (
-                        get_enhanced_processing_results_for_claim(claim_id, pdf_files)
+                        get_processing_results_for_claim(claim_id, pdf_files)
                     )
                 except Exception as e:
                     logger.warning(
@@ -170,7 +164,7 @@ def run_batch_audit_matching(max_claims=None):
                         get_mock_processing_results_for_claim(claim_id, pdf_files)
                     )
 
-            # Perform enhanced batch matching
+            # Perform batch matching
             from matching_functions import batch_match_claims
 
             batch_matching_results = batch_match_claims(
@@ -188,10 +182,10 @@ def run_batch_audit_matching(max_claims=None):
                         successful_audits_batch += 1
                         successful_audits_total += 1
                         logger.info(
-                            f"✅ CLAIM_ID {claim_id}: Enhanced audit passed - {result['reason']}"
+                            f"✅ CLAIM_ID {claim_id}: audit passed - {result['reason']}"
                         )
 
-                        # Log enhanced details for successful matches
+                        # Log details for successful matches
                         if (
                             "details" in result
                             and "data_validation" in result["details"]
@@ -199,7 +193,7 @@ def run_batch_audit_matching(max_claims=None):
                             validation = result["details"]["data_validation"]
                             if validation.get("overall_data_match"):
                                 logger.debug(
-                                    f"   Data validation: ✅ Claim/VIN match confirmed"
+                                    "   Data validation: ✅ Claim/VIN match confirmed"
                                 )
 
                     else:
@@ -207,7 +201,7 @@ def run_batch_audit_matching(max_claims=None):
                         failed_audits_batch += 1
                         failed_audits_total += 1
                         logger.warning(
-                            f"❌ CLAIM_ID {claim_id}: Enhanced audit failed - {result['reason']}"
+                            f"❌ CLAIM_ID {claim_id}: audit failed - {result['reason']}"
                         )
 
                         # Log enhanced details for failed matches
@@ -236,7 +230,7 @@ def run_batch_audit_matching(max_claims=None):
 
             # Log enhanced batch summary
             logger.info(
-                f"📊 Enhanced batch {batch_number} completed: {successful_audits_batch} passed, {failed_audits_batch} failed"
+                f"📊 Batch {batch_number} completed: {successful_audits_batch} passed, {failed_audits_batch} failed"
             )
 
             batch_number += 1
@@ -251,7 +245,7 @@ def run_batch_audit_matching(max_claims=None):
             # Small delay between batches to prevent overwhelming the database
             time.sleep(0.1)
 
-        # Generate and log enhanced final report if any claims were processed
+        # Generate and log final report if any claims were processed
         if all_results:
             from matching_functions import generate_matching_report
 
@@ -260,7 +254,7 @@ def run_batch_audit_matching(max_claims=None):
 
         # Enhanced final summary
         if total_processed > 0:
-            logger.info(f"📊 Enhanced continuous audit matching completed:")
+            logger.info("📊 Continuous audit matching completed:")
             logger.info(f"   Total batches: {batch_number - 1}")
             logger.info(f"   Total claims processed: {total_processed}")
             logger.info(
@@ -269,12 +263,9 @@ def run_batch_audit_matching(max_claims=None):
             logger.info(
                 f"   Total failed: {failed_audits_total} ({failed_audits_total / total_processed * 100:.1f}%)"
             )
-            logger.info(
-                f"   Enhanced features: Individual file processing, data validation, amount extraction by doc type"
-            )
         else:
             logger.info(
-                "📊 Enhanced continuous audit matching completed: No claims were processed"
+                "📊 Continuous audit matching completed: No claims were processed"
             )
 
         return all_results
@@ -284,17 +275,17 @@ def run_batch_audit_matching(max_claims=None):
         return {}
 
 
-def run_batch_audit_matching_job_enhanced():
+def run_batch_audit_matching_job():
     """
-    Enhanced scheduled job function for audit matching.
+    Scheduled job function for audit matching.
     Processes claims that have been through PDF processing with enhanced data validation.
     """
     logger.info(
-        f"\n🔍 Starting ENHANCED scheduled audit matching at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        f"\n🔍 Starting scheduled audit matching at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
     )
 
     try:
-        matching_results = run_batch_audit_matching_enhanced()
+        matching_results = run_batch_audit_matching()
 
         if matching_results:
             logger.info(

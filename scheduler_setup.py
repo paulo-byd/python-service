@@ -1,11 +1,10 @@
 import logging
-from datetime import datetime, timedelta
 from apscheduler.schedulers.blocking import BlockingScheduler
 
 # Import the job functions from other modules
 from downloader import run_download_process, auto_recover_failed_downloads
 from pdf_processor import run_batch_pdf_processing_api
-from audit_matcher import run_batch_audit_matching_job_enhanced
+from audit_matcher import run_batch_audit_matching_job
 
 logger = logging.getLogger(__name__)
 
@@ -16,20 +15,16 @@ def start_scheduler(config):
 
     # Get intervals from config
     download_interval_hours = config["scheduler"]["periodicity_hours"]
-    pdf_processing_hours = config.get("pdf_processing", {}).get("interval_hours", 4)
-    audit_matching_hours = config.get("audit_matching", {}).get("interval_hours", 4)
+    pdf_processing_hours = config.get("pdf_processing", {}).get("interval_hours", 0.5)
+    audit_matching_hours = config.get("audit_matching", {}).get("interval_hours", 0.6)
 
     # Run the download job immediately on first start
     logger.info("Running the first download process immediately...")
-    run_download_process(
-        config, run_batch_pdf_processing_api, run_batch_audit_matching_job_enhanced
-    )
+    run_download_process()
 
     # Schedule recurring jobs
     scheduler.add_job(
-        lambda: run_download_process(
-            config, run_batch_pdf_processing_api, run_batch_audit_matching_job_enhanced
-        ),
+        run_download_process(),
         "interval",
         hours=download_interval_hours,
         id="download_job",
@@ -41,7 +36,7 @@ def start_scheduler(config):
         id="pdf_processing_job",
     )
     scheduler.add_job(
-        run_batch_audit_matching_job_enhanced,
+        run_batch_audit_matching_job,
         "interval",
         hours=audit_matching_hours,
         id="audit_matching_job",
