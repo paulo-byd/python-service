@@ -20,7 +20,6 @@
 
 The environment parameter determines which database configuration to use (local, UAT, or production). If no parameter is provided, it defaults to "local".
 
-
 ## Documentation
 
 ### Main.py
@@ -31,6 +30,7 @@ The environment parameter determines which database configuration to use (local,
    2. Batch PDF Processing Job
 
 #### i) Download Job
+
 1. Get new files to download
    1. Get list of claims that needs download.
       1. Get DMS Claim Data into df
@@ -45,7 +45,15 @@ The environment parameter determines which database configuration to use (local,
 4. Iterate over files df and download them and log download status as SUCCESS or FAILED and new last modified date in the tracking table.
 
 #### ii) PDF Processing Job
+
 1. Get all the files sucessfully downloaded in the last 24 hours.
 2. Create a list with each file path and processes these files.
 3. Return a JSON
 
+---
+
+When it comes to the real thing:
+
+On the file _./process_pdf_dir.py_ change this process to process it locally or as a function: run_file_processing_simple()
+
+For API -> run_batch_pdf_processing_api() on _./pdf_processor.py_

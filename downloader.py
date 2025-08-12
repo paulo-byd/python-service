@@ -15,6 +15,47 @@ download_times = []
 download_times_lock = threading.Lock()
 
 
+def run_download_process():
+    """
+    Main download process that integrates with the individual file processing.
+    """
+    config = db_handler.load_config()
+
+    # Check if parallel mode is enabled in config
+    parallel_enabled = config.get("performance", {}).get("parallel_downloads", False)
+    max_workers = config.get("performance", {}).get("max_workers", 4)
+
+    if parallel_enabled:
+        run_download_process_parallel(max_workers)
+    else:
+        run_download_process_sequential()
+
+    # Auto-audit with individual file processing
+    auto_audit_enabled = config.get("audit_matching", {}).get(
+        "auto_run_after_download", True
+    )
+
+    pdf_api_enabled = config.get("pdf_processing", {}).get("api_enabled", False)
+
+    if auto_audit_enabled:
+        logger.info("\n🔄 Auto-triggering audit matching after download completion...")
+        try:
+            from pdf_processor import run_batch_pdf_processing_api
+            from audit_matcher import run_batch_audit_matching_job
+
+            logger.info("📄 Starting PDF processing...")
+            if pdf_api_enabled:
+                run_batch_pdf_processing_api()
+
+            logger.info("🔍 Starting audit matching...")
+            run_batch_audit_matching_job()
+
+        except ImportError as e:
+            logger.error(f"❌ Could not import processing functions: {e}")
+        except Exception as e:
+            logger.error(f"❌ Error in auto-audit process: {e}")
+
+
 def download_pdf(file_id, create_date, claim_id, config):
     """
     Constructs the URL and downloads a single PDF file.
@@ -397,47 +438,6 @@ def run_download_process_parallel(max_workers=4):
 
     except Exception as e:
         logger.error(f"🚨 Critical error in parallel process: {e}")
-
-
-def run_download_process():
-    """
-    Main download process that integrates with the individual file processing.
-    """
-    config = db_handler.load_config()
-
-    # Check if parallel mode is enabled in config
-    parallel_enabled = config.get("performance", {}).get("parallel_downloads", False)
-    max_workers = config.get("performance", {}).get("max_workers", 4)
-
-    if parallel_enabled:
-        run_download_process_parallel(max_workers)
-    else:
-        run_download_process_sequential()
-
-    # Auto-audit with individual file processing
-    auto_audit_enabled = config.get("audit_matching", {}).get(
-        "auto_run_after_download", True
-    )
-
-    pdf_api_enabled = config.get("pdf_processing", {}).get("api_enabled", False)
-
-    if auto_audit_enabled:
-        logger.info("\n🔄 Auto-triggering audit matching after download completion...")
-        try:
-            from pdf_processor import run_batch_pdf_processing_api
-            from audit_matcher import run_batch_audit_matching_job
-
-            logger.info("📄 Starting PDF processing...")
-            if pdf_api_enabled:
-                run_batch_pdf_processing_api()
-
-            logger.info("🔍 Starting audit matching...")
-            run_batch_audit_matching_job()
-
-        except ImportError as e:
-            logger.error(f"❌ Could not import processing functions: {e}")
-        except Exception as e:
-            logger.error(f"❌ Error in auto-audit process: {e}")
 
 
 def auto_recover_failed_downloads():

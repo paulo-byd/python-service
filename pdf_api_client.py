@@ -391,7 +391,7 @@ def process_claim_pdfs_individually_api(
 
 
 def run_batch_processing_api(
-    input_pdf_dir_path: Path, pdf_file_paths: List = [], config: Dict = None
+    input_pdf_dir_path: Path, pdf_file_paths: List = [], config: Dict | None = None
 ) -> str:
     """
     API-based version of run_batch_processing.

@@ -71,7 +71,7 @@ def run_batch_audit_matching(max_claims=None):
         return {}
 
     logger.info(
-        f"\n🔍 Starting ENHANCED continuous audit matching at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        f"\n🔍 Starting continuous audit matching at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
     )
 
     try:
@@ -81,9 +81,7 @@ def run_batch_audit_matching(max_claims=None):
         from matching_functions import validate_matching_config
 
         if not validate_matching_config(config):
-            logger.error(
-                "Invalid matching configuration - aborting enhanced audit matching"
-            )
+            logger.error("Invalid matching configuration - aborting audit matching")
             return {}
 
         # Get batch size from config
@@ -142,7 +140,7 @@ def run_batch_audit_matching(max_claims=None):
                 }
                 claim_data_list.append(claim_data)
 
-                # Get enhanced processing results for this claim
+                # Get processing results for this claim
                 pdf_files = db_handler.get_claim_pdf_files(claim_id)
 
                 # Try to get real processing results, fallback to mock
@@ -279,7 +277,7 @@ def run_batch_audit_matching(max_claims=None):
 def run_batch_audit_matching_job():
     """
     Scheduled job function for audit matching.
-    Processes claims that have been through PDF processing with enhanced data validation.
+    Processes claims that have been through PDF processing with data validation.
     """
     logger.info(
         f"\n🔍 Starting scheduled audit matching at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
@@ -290,12 +288,10 @@ def run_batch_audit_matching_job():
 
         if matching_results:
             logger.info(
-                f"🔍 Enhanced scheduled audit matching completed for {len(matching_results)} claims"
+                f"🔍 Audit matching completed for {len(matching_results)} claims"
             )
         else:
-            logger.info(
-                "🔍 Enhanced scheduled audit matching completed - no claims audited"
-            )
+            logger.info("🔍 Audit matching completed - no claims audited")
 
     except Exception as e:
         logger.error(f"🚨 Critical error in enhanced scheduled audit matching: {e}")

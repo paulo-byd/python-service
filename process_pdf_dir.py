@@ -13,6 +13,7 @@ TEST_INPUT_PDF_DIRECTORY = BASE_DIR / "test_pdf_dir"
 USE_MOCK_PROCESSING = True
 
 
+# TODO: Change this for the real thing
 def run_file_processing_simple(pdf_file_path: Path):
     """
     Process a single PDF file and extract information.
@@ -234,8 +235,6 @@ def run_batch_processing(input_pdf_dir_path: Path, pdf_file_paths: list = []):
 def process_claim_pdfs_individually(claim_id: int, pdf_file_paths: list):
     """
     Process all PDF files for a specific claim using individual file processing.
-
-    This is the new recommended approach for claim-based processing.
 
     Args:
         claim_id (int): The claim ID being processed

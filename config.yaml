@@ -121,12 +121,13 @@ performance:
 
 # PDF Processing Pipeline Configuration
 pdf_processing:
+  api_enabled: false  # Set to true when PDF processing API is ready
+  use_mock_processing: true  # Use mock results for testing
+
   # Batch processing settings
   max_claims_per_batch: 10        # Process this many claims at a time
   max_files_per_processing_call: 50  # Pass max this many files to run_batch_processing()
   
-  api_enabled: false  # Set to true when PDF processing API is ready
-  use_mock_processing: true  # Use mock results for testing
   
   # Processing intervals (in hours)
   interval_hours: 0.5  # How often to run PDF processing
