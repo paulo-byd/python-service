@@ -8,6 +8,7 @@ When the real PDF processing is ready, replace this with the production version.
 
 import logging
 import random
+import hashlib
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Tuple

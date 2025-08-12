@@ -8,7 +8,8 @@ import db_handler
 # Mock/local matching availability flags
 try:
     from matching_functions import (
-        extract_amounts_from_processing_results as extract_func,  # noqa: F401
+        extract_amounts_from_processing_results as extract_func,
+        validate_claim_data_match,
     )
 
     MATCHING_AVAILABLE = True

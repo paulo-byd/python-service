@@ -386,7 +386,9 @@ def get_dms_db_connection(retry_count=3, retry_delay=2):
                 )
 
     # If we get here, all attempts failed
-    raise last_error
+    raise ConnectionError(
+        f"Failed to connect to DMS database after {retry_count} attempts. Last error: {last_error}"
+    )
 
 
 def get_bgate_db_connection():

@@ -6,6 +6,23 @@ import db_handler  # Your custom module
 logger = logging.getLogger(__name__)
 
 
+def setup_environment():
+    """Sets the environment mode based on command-line arguments."""
+    if len(sys.argv) > 1:
+        env_mode = sys.argv[1].lower()
+        if env_mode in ["local", "uat", "prod"]:
+            db_handler.set_environment_mode(env_mode)
+            logger.info(f"Environment mode set to: {env_mode}")
+        else:
+            logger.warning(
+                f"Invalid environment mode: {env_mode}. Using default: local"
+            )
+            db_handler.set_environment_mode("local")
+    else:
+        db_handler.set_environment_mode("local")
+        logger.info("Using default environment mode: local")
+
+
 def load_and_validate_config():
     """Loads and validates the application configuration."""
     try:
@@ -65,20 +82,3 @@ def load_and_validate_config():
     except Exception as e:
         logger.error(f"🚨 Configuration validation failed: {e}")
         sys.exit(1)
-
-
-def setup_environment():
-    """Sets the environment mode based on command-line arguments."""
-    if len(sys.argv) > 1:
-        env_mode = sys.argv[1].lower()
-        if env_mode in ["local", "uat", "prod"]:
-            db_handler.set_environment_mode(env_mode)
-            logger.info(f"Environment mode set to: {env_mode}")
-        else:
-            logger.warning(
-                f"Invalid environment mode: {env_mode}. Using default: local"
-            )
-            db_handler.set_environment_mode("local")
-    else:
-        db_handler.set_environment_mode("local")
-        logger.info("Using default environment mode: local")
