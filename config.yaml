@@ -28,8 +28,8 @@ database:
   
 # Scheduler settings
 scheduler:
-  # Run the check every 2 hours. 
-  periodicity_hours: 2
+  # Run the check every 0.5 hours. 
+  periodicity_hours: 0.5
   
   # Prevent overlapping jobs
   max_instances: 1
