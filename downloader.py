@@ -419,6 +419,8 @@ def run_download_process():
         "auto_run_after_download", True
     )
 
+    pdf_api_enabled = config.get("pdf_processing", {}).get("api_enabled", False)
+
     if auto_audit_enabled:
         logger.info("\n🔄 Auto-triggering audit matching after download completion...")
         try:
@@ -426,7 +428,8 @@ def run_download_process():
             from audit_matcher import run_batch_audit_matching_job
 
             logger.info("📄 Starting PDF processing...")
-            run_batch_pdf_processing_api()
+            if pdf_api_enabled:
+                run_batch_pdf_processing_api()
 
             logger.info("🔍 Starting audit matching...")
             run_batch_audit_matching_job()

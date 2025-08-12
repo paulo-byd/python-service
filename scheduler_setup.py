@@ -24,7 +24,7 @@ def start_scheduler(config):
 
     # Schedule recurring jobs
     scheduler.add_job(
-        run_download_process(),
+        run_download_process,
         "interval",
         hours=download_interval_hours,
         id="download_job",

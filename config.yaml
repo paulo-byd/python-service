@@ -121,6 +121,9 @@ pdf_processing:
   max_claims_per_batch: 10        # Process this many claims at a time
   max_files_per_processing_call: 50  # Pass max this many files to run_batch_processing()
   
+  api_enabled: false  # Set to true when PDF processing API is ready
+  use_mock_processing: true  # Use mock results for testing
+  
   # Processing intervals (in hours)
   interval_hours: 0.5  # How often to run PDF processing
   
@@ -145,17 +148,6 @@ audit_matching:
   retry_rejected_claims: false  # Whether to retry claims that were rejected
 
 # PDF Processing Pipeline Configuration
-pdf_processing:
-  # Batch processing settings
-  max_claims_per_batch: 10        # Process this many claims at a time
-  max_files_per_processing_call: 50  # Pass max this many files to run_batch_processing()
-  
-  # Processing intervals (in hours)
-  interval_hours: 0.5  # How often to run PDF processing
-  
-  # Processing behavior
-  process_immediately_after_download: false  # If true, process PDFs right after downloading a complete claim
-  skip_failed_claims: true  # Skip claims that failed processing in previous attempts
 
 # PDF Processing API Configuration
 pdf_processing_api:
@@ -163,6 +155,7 @@ pdf_processing_api:
   base_url: "http://localhost:8888"  # URL of the PDF processing API
   timeout_seconds: 300  # 5 minutes timeout for PDF processing requests
   
+  enabled: false
   # Health check settings
   health_check_interval: 60  # Check API health every 60 seconds
   max_retries: 3  # Maximum retries for failed API calls
