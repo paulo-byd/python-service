@@ -34,6 +34,10 @@ scheduler:
   # Prevent overlapping jobs
   max_instances: 1
 
+  run_separated_pdf_processing: false
+
+  run_separated_match: false
+
 # Logging configuration
 logging:
   level: INFO  # DEBUG, INFO, WARNING, ERROR

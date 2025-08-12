@@ -18,6 +18,10 @@ def start_scheduler(config):
     pdf_processing_hours = config.get("pdf_processing", {}).get("interval_hours", 0.5)
     audit_matching_hours = config.get("audit_matching", {}).get("interval_hours", 0.6)
 
+    # Get scheduler config
+    run_separated_pdf_processing = config["scheduler"]["run_separated_pdf_processing"]
+    run_separated_match = config["scheduler"]["run_separated_match"]
+
     # Run the download job immediately on first start
     logger.info("Running the first download process immediately...")
     run_download_process()
@@ -29,21 +33,26 @@ def start_scheduler(config):
         hours=download_interval_hours,
         id="download_job",
     )
-    scheduler.add_job(
-        run_batch_pdf_processing_api,
-        "interval",
-        hours=pdf_processing_hours,
-        id="pdf_processing_job",
-    )
-    scheduler.add_job(
-        run_batch_audit_matching_job,
-        "interval",
-        hours=audit_matching_hours,
-        id="audit_matching_job",
-    )
+
     scheduler.add_job(
         auto_recover_failed_downloads, "interval", hours=2, id="auto_recovery"
     )
+
+    if run_separated_pdf_processing:
+        scheduler.add_job(
+            run_batch_pdf_processing_api,
+            "interval",
+            hours=pdf_processing_hours,
+            id="pdf_processing_job",
+        )
+
+    if run_separated_match:
+        scheduler.add_job(
+            run_batch_audit_matching_job,
+            "interval",
+            hours=audit_matching_hours,
+            id="audit_matching_job",
+        )
 
     logger.info("🕒 Scheduler started.")
     logger.info(f"   - Downloads will run every {download_interval_hours} hours")
