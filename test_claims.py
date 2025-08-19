@@ -327,7 +327,7 @@ def get_test_claims(num_claims: int):
         return []
 
 
-def process_single_test_claim(claim_info: dict, use_real_processing: bool = True, debug_amounts: bool = False):
+def process_single_test_claim(claim_info: dict, use_real_processing: bool = True, debug_amounts: bool = True):
     """
     Process a single claim's PDF files and return results.
     
@@ -629,9 +629,6 @@ def main():
     
     try:
         db_handler.set_environment_mode("uat")
-        
-        # Load configuration
-        config = load_and_validate_config()
         
         # Initialize database connections
         db_handler.initialize_connection_pools(
