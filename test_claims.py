@@ -19,7 +19,6 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
-import pandas as pd
 
 # Import our existing modules
 import db_handler
@@ -27,6 +26,7 @@ from config_loader import load_and_validate_config, setup_environment
 from process_pdf_dir import process_claim_pdfs_individually
 from pdf_api_client import close_pdf_api_client
 from audit_matcher import extract_amounts_from_processing_results
+import pandas as pd
 
 # Setup logging
 logging.basicConfig(
@@ -37,7 +37,41 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def save_processing_results_to_database(claim_id: int, processing_results: dict, processing_time: float) -> bool:
+def debug_processing_results(processing_results: dict):
+    """
+    Debug the processing results to understand why amounts are not being extracted.
+    """
+    logger.info(f"\n🔍 DEBUGGING PROCESSING RESULTS")
+    logger.info(f"=" * 50)
+    
+    # Show top-level structure
+    logger.info(f"Top-level keys: {list(processing_results.keys())}")
+    
+    # Check file_stats structure
+    if 'file_stats' in processing_results:
+        logger.info(f"file_stats has {len(processing_results['file_stats'])} files")
+        
+        for file_path, file_data in processing_results['file_stats'].items():
+            logger.info(f"\nFile: {file_path}")
+            logger.info(f"  File data keys: {list(file_data.keys())}")
+            
+            if 'file_model_output' in file_data:
+                output = file_data['file_model_output']
+                logger.info(f"  file_model_output keys: {list(output.keys())}")
+                logger.info(f"  file_model_output content: {output}")
+            else:
+                logger.info(f"  ❌ No 'file_model_output' found")
+    
+    # Check consolidated_data
+    if 'consolidated_data' in processing_results:
+        logger.info(f"\nconsolidated_data: {processing_results['consolidated_data']}")
+    
+    # Check processing_summary  
+    if 'processing_summary' in processing_results:
+        logger.info(f"\nprocessing_summary: {processing_results['processing_summary']}")
+
+
+def save_processing_results_to_database(claim_id: int, processing_results: dict, processing_time: float, debug_amounts: bool = False) -> bool:
     """
     Save processing results to database just like the production system does.
     
@@ -52,8 +86,14 @@ def save_processing_results_to_database(claim_id: int, processing_results: dict,
     try:
         logger.info(f"💾 Saving processing results to database for CLAIM_ID {claim_id}...")
         
+        if debug_amounts:
+            debug_processing_results(processing_results)
+        
         # Extract amounts from processing results (same logic as production)
         extracted_amounts = extract_amounts_from_processing_results(processing_results)
+        
+        if debug_amounts:
+            logger.info(f"🔍 Extracted amounts: {extracted_amounts}")
         
         # Update the processing amounts in the database
         db_handler.update_processing_amounts(
@@ -287,7 +327,7 @@ def get_test_claims(num_claims: int):
         return []
 
 
-def process_single_test_claim(claim_info: dict, use_real_processing: bool = True):
+def process_single_test_claim(claim_info: dict, use_real_processing: bool = True, debug_amounts: bool = False):
     """
     Process a single claim's PDF files and return results.
     
@@ -353,7 +393,7 @@ def process_single_test_claim(claim_info: dict, use_real_processing: bool = True
         processing_time = time.time() - start_time
         
         # Save processing results to database (just like production system)
-        save_success = save_processing_results_to_database(claim_id, processing_results, processing_time)
+        save_success = save_processing_results_to_database(claim_id, processing_results, processing_time, debug_amounts)
         
         # Extract key metrics from results
         summary = processing_results.get('processing_summary', {})
@@ -405,7 +445,52 @@ def process_single_test_claim(claim_info: dict, use_real_processing: bool = True
         }
 
 
-def print_test_summary(results: list):
+def run_audit_matching_on_test_claims(claim_ids: list) -> dict:
+    """
+    Run audit matching on the test claims after processing.
+    
+    Args:
+        claim_ids (list): List of claim IDs that were processed
+        
+    Returns:
+        dict: Audit matching results
+    """
+    logger.info(f"\n🔍 Running audit matching on {len(claim_ids)} test claims...")
+    
+    try:
+        # Import audit matching functions
+        from audit_matcher import run_batch_audit_matching
+        
+        # Run audit matching
+        matching_results = run_batch_audit_matching()
+        
+        if matching_results:
+            logger.info(f"✅ Audit matching completed for {len(matching_results)} claims")
+            
+            # Show results for our test claims
+            for claim_id in claim_ids:
+                if claim_id in matching_results:
+                    result = matching_results[claim_id]
+                    status = "✅ PASSED" if result.get("match_success", False) else "❌ FAILED"
+                    reason = result.get("reason", "No reason provided")
+                    logger.info(f"   CLAIM_ID {claim_id}: {status} - {reason}")
+                else:
+                    logger.warning(f"   CLAIM_ID {claim_id}: Not found in matching results")
+            
+            return matching_results
+        else:
+            logger.warning("No matching results returned")
+            return {}
+            
+    except ImportError as e:
+        logger.error(f"❌ Could not import audit matching functions: {e}")
+        return {}
+    except Exception as e:
+        logger.error(f"❌ Error running audit matching: {e}")
+        return {}
+
+
+def print_test_summary(results: list, matching_results: dict = None):
     """
     Print a summary of test results.
     
@@ -471,6 +556,29 @@ def print_test_summary(results: list):
             logger.info(f"✅ All successful claims saved to database")
         else:
             logger.warning(f"⚠️ Some successful claims not saved to database")
+    
+    # Show audit matching results
+    if matching_results:
+        logger.info(f"")
+        logger.info(f"🔍 Audit Matching Results:")
+        
+        matched_claims = len(matching_results)
+        passed_audits = len([r for r in matching_results.values() if r.get("match_success", False)])
+        failed_audits = matched_claims - passed_audits
+        
+        logger.info(f"Claims processed for audit: {matched_claims}")
+        logger.info(f"Audit matches PASSED: {passed_audits}")
+        logger.info(f"Audit matches FAILED: {failed_audits}")
+        
+        if matched_claims > 0:
+            success_rate = (passed_audits / matched_claims) * 100
+            logger.info(f"Audit success rate: {success_rate:.1f}%")
+        
+        # Show individual results
+        for claim_id, result in matching_results.items():
+            status = "✅ PASSED" if result.get("match_success", False) else "❌ FAILED"
+            reason = result.get("reason", "No reason provided")
+            logger.info(f"   CLAIM_ID {claim_id}: {status} - {reason}")
 
 
 def main():
@@ -494,6 +602,16 @@ def main():
         type=str,
         help='Force test specific claim IDs (comma-separated, e.g., --force-claims 12345,12346)'
     )
+    parser.add_argument(
+        '--no-audit',
+        action='store_true',
+        help='Skip audit matching after processing'
+    )
+    parser.add_argument(
+        '--debug-amounts',
+        action='store_true',
+        help='Show detailed amount extraction debugging'
+    )
     
     args = parser.parse_args()
     
@@ -510,15 +628,7 @@ def main():
     logger.info(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     
     try:
-        # Setup environment properly for test script
-        import os
-        if args.env:
-            # Set environment mode directly instead of using sys.argv
-            db_handler.set_environment_mode(args.env)
-            logger.info(f"Environment mode set to: {args.env}")
-        else:
-            db_handler.set_environment_mode("local")
-            logger.info("Using default environment mode: local")
+        db_handler.set_environment_mode("uat")
         
         # Load configuration
         config = load_and_validate_config()
@@ -554,7 +664,8 @@ def main():
             
             result = process_single_test_claim(
                 claim_info, 
-                use_real_processing=not args.mock
+                use_real_processing=not args.mock,
+                debug_amounts=args.debug_amounts
             )
             results.append(result)
             
@@ -564,6 +675,18 @@ def main():
         
         # Print summary
         print_test_summary(results)
+        
+        # Run audit matching if requested and we have successful claims
+        matching_results = {}
+        if not args.no_audit and successful_claims > 0:
+            successful_claim_ids = [r['claim_id'] for r in results if r['status'] == 'SUCCESS']
+            matching_results = run_audit_matching_on_test_claims(successful_claim_ids)
+            
+            # Print updated summary with audit results
+            if matching_results:
+                logger.info(f"\n📊 FINAL TEST SUMMARY (with audit matching)")
+                logger.info(f"=" * 50)
+                print_test_summary(results, matching_results)
         
         logger.info(f"\n✅ Test completed successfully!")
         
