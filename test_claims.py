@@ -19,6 +19,7 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
+import pandas as pd
 
 # Import our existing modules
 import db_handler
@@ -74,6 +75,174 @@ def save_processing_results_to_database(claim_id: int, processing_results: dict,
     except Exception as e:
         logger.error(f"❌ Failed to save processing results to database for CLAIM_ID {claim_id}: {e}")
         return False
+
+
+def diagnose_database_status():
+    """
+    Check what's in the database to understand why no claims are ready for processing.
+    """
+    logger.info(f"\n🔍 DIAGNOSING DATABASE STATUS")
+    logger.info(f"=" * 50)
+    
+    try:
+        connection = db_handler.get_bgate_db_connection()
+        
+        # Check total claims in CLAIM_STATUS
+        total_claims_query = "SELECT COUNT(*) FROM CLAIM_STATUS"
+        cursor = connection.cursor()
+        cursor.execute(total_claims_query)
+        total_claims = cursor.fetchone()[0]
+        logger.info(f"Total claims in CLAIM_STATUS: {total_claims}")
+        
+        if total_claims == 0:
+            logger.warning("❌ No claims found in CLAIM_STATUS table!")
+            logger.info("💡 You may need to run the download job first to populate claim data")
+            return
+        
+        # Check attachment statuses
+        status_query = """
+            SELECT ATTACHMENT_STATUS, COUNT(*) as count
+            FROM CLAIM_STATUS 
+            GROUP BY ATTACHMENT_STATUS
+            ORDER BY COUNT(*) DESC
+        """
+        cursor.execute(status_query)
+        statuses = cursor.fetchall()
+        
+        logger.info(f"\nAttachment Status Distribution:")
+        for status, count in statuses:
+            logger.info(f"  {status or 'NULL'}: {count}")
+        
+        # Check audit statuses
+        audit_query = """
+            SELECT AUDIT_STATUS, COUNT(*) as count
+            FROM CLAIM_STATUS 
+            GROUP BY AUDIT_STATUS
+            ORDER BY COUNT(*) DESC
+        """
+        cursor.execute(audit_query)
+        audit_statuses = cursor.fetchall()
+        
+        logger.info(f"\nAudit Status Distribution:")
+        for status, count in audit_statuses:
+            logger.info(f"  {status or 'NULL'}: {count}")
+        
+        # Check for specific conditions that make claims ready for processing
+        ready_query = """
+            SELECT COUNT(*) 
+            FROM CLAIM_STATUS
+            WHERE ATTACHMENT_STATUS = 'COMPLETE'
+        """
+        cursor.execute(ready_query)
+        complete_attachments = cursor.fetchone()[0]
+        logger.info(f"\nClaims with COMPLETE attachments: {complete_attachments}")
+        
+        # Check for claims with downloaded files
+        files_query = """
+            SELECT COUNT(DISTINCT CLAIM_ID) 
+            FROM PDF_DOWNLOAD_DMS_CLAIMS 
+            WHERE STATUS = 'SUCCESS' 
+            AND IS_LATEST_VERSION = 'Y'
+        """
+        cursor.execute(files_query)
+        claims_with_files = cursor.fetchone()[0]
+        logger.info(f"Claims with successfully downloaded files: {claims_with_files}")
+        
+        # Show some example claims that might be ready
+        example_query = """
+            SELECT CLAIM_ID, CLAIM_NO, ATTACHMENT_STATUS, AUDIT_STATUS, 
+                   TOTAL_FILES_COUNT, DOWNLOADED_FILES_COUNT
+            FROM CLAIM_STATUS 
+            WHERE ROWNUM <= 5
+            ORDER BY LAST_MODIFIED_DATE DESC
+        """
+        cursor.execute(example_query)
+        examples = cursor.fetchall()
+        
+        logger.info(f"\nExample claims (first 5):")
+        for claim_id, claim_no, attach_status, audit_status, total_files, downloaded_files in examples:
+            logger.info(f"  CLAIM_ID {claim_id} ({claim_no}): {attach_status} | Audit: {audit_status or 'NULL'} | Files: {downloaded_files}/{total_files}")
+        
+        cursor.close()
+        connection.close()
+        
+        # Suggest solutions
+        logger.info(f"\n💡 SUGGESTIONS:")
+        if complete_attachments == 0:
+            logger.info(f"1. No claims have COMPLETE attachment status")
+            logger.info(f"   - Run the download job to download PDF files")
+            logger.info(f"   - Or manually update attachment status: UPDATE CLAIM_STATUS SET ATTACHMENT_STATUS = 'COMPLETE' WHERE DOWNLOADED_FILES_COUNT > 0")
+        else:
+            logger.info(f"2. Try resetting audit status to make claims ready for processing:")
+            logger.info(f"   - UPDATE CLAIM_STATUS SET AUDIT_STATUS = NULL WHERE ATTACHMENT_STATUS = 'COMPLETE'")
+            
+    except Exception as e:
+        logger.error(f"❌ Error diagnosing database: {e}")
+
+
+def get_forced_test_claims(claim_ids: list):
+    """
+    Get specific claims by ID for testing, regardless of their processing status.
+    
+    Args:
+        claim_ids (list): List of claim IDs to test
+        
+    Returns:
+        list: List of claim dictionaries
+    """
+    logger.info(f"🎯 Getting forced test claims: {claim_ids}")
+    
+    try:
+        connection = db_handler.get_bgate_db_connection()
+        
+        # Create placeholders for the query
+        placeholders = ','.join([f':id{i}' for i in range(len(claim_ids))])
+        params = {f'id{i}': claim_id for i, claim_id in enumerate(claim_ids)}
+        
+        query = f"""
+            SELECT 
+                CLAIM_ID,
+                CLAIM_NO,
+                VIN,
+                DEALER_CODE,
+                DEALER_NAME,
+                ATTACHMENT_STATUS,
+                AUDIT_STATUS,
+                TOTAL_FILES_COUNT,
+                DOWNLOADED_FILES_COUNT
+            FROM CLAIM_STATUS
+            WHERE CLAIM_ID IN ({placeholders})
+            ORDER BY CLAIM_ID
+        """
+        
+        df = pd.read_sql(query, connection, params=params)
+        connection.close()
+        
+        if df.empty:
+            logger.warning(f"No claims found for IDs: {claim_ids}")
+            return []
+        
+        # Convert to list of dictionaries
+        test_claims = []
+        for _, row in df.iterrows():
+            test_claims.append({
+                'CLAIM_ID': int(row['CLAIM_ID']),
+                'CLAIM_NO': row.get('CLAIM_NO', 'N/A'),
+                'VIN': row.get('VIN', 'N/A'),
+                'DEALER_CODE': row.get('DEALER_CODE', 'N/A'),
+                'ATTACHMENT_STATUS': row.get('ATTACHMENT_STATUS', 'N/A'),
+                'AUDIT_STATUS': row.get('AUDIT_STATUS', 'N/A')
+            })
+        
+        logger.info(f"✅ Found {len(test_claims)} forced test claims")
+        for claim in test_claims:
+            logger.info(f"   CLAIM_ID {claim['CLAIM_ID']}: {claim['ATTACHMENT_STATUS']} | Audit: {claim['AUDIT_STATUS'] or 'NULL'}")
+        
+        return test_claims
+        
+    except Exception as e:
+        logger.error(f"❌ Error getting forced test claims: {e}")
+        return []
 
 
 def get_test_claims(num_claims: int):
@@ -321,10 +490,9 @@ def main():
         help='Use mock processing instead of real processing'
     )
     parser.add_argument(
-        '--env',
-        choices=['local', 'uat', 'prod'],
-        default='local',
-        help='Environment to use (default: local)'
+        '--force-claims',
+        type=str,
+        help='Force test specific claim IDs (comma-separated, e.g., --force-claims 12345,12346)'
     )
     
     args = parser.parse_args()
@@ -342,11 +510,15 @@ def main():
     logger.info(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     
     try:
-        # Setup environment
+        # Setup environment properly for test script
         import os
         if args.env:
-            os.environ['APP_ENV'] = args.env
-        setup_environment()
+            # Set environment mode directly instead of using sys.argv
+            db_handler.set_environment_mode(args.env)
+            logger.info(f"Environment mode set to: {args.env}")
+        else:
+            db_handler.set_environment_mode("local")
+            logger.info("Using default environment mode: local")
         
         # Load configuration
         config = load_and_validate_config()
@@ -357,11 +529,20 @@ def main():
             max_connections=5,  # Fewer connections for testing
         )
         
-        # Get test claims
-        test_claims = get_test_claims(args.claims)
+        # Get test claims (either by normal query or forced claim IDs)
+        if args.force_claims:
+            claim_ids = [int(x.strip()) for x in args.force_claims.split(',')]
+            logger.info(f"🎯 Forcing test with specific claim IDs: {claim_ids}")
+            test_claims = get_forced_test_claims(claim_ids)
+        else:
+            test_claims = get_test_claims(args.claims)
         
         if not test_claims:
-            logger.error("No test claims found - exiting")
+            if args.force_claims:
+                logger.error("Forced claim IDs not found or have no files")
+            else:
+                logger.error("No test claims found - running diagnosis...")
+                diagnose_database_status()
             sys.exit(1)
         
         logger.info(f"Processing {len(test_claims)} claims...")
