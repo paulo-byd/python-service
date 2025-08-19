@@ -135,7 +135,8 @@ monitoring:
 # Development and Testing Options
 development:
   # Mock processing for testing
-  use_mock_processing: false     # Force mock processing instead of ultra-arena
+  use_mock_processing: false      # Force mock processing instead of ultra-arena
+  mock_success_rate: 0.7          # Success rate for mock processing (0.0 to 1.0)
   simulate_download_errors: false # Randomly simulate download errors
   
   # Database options

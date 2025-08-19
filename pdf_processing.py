@@ -21,6 +21,10 @@ class PDFProcessor:
         self.db_ops = db_ops
         self.processing_config = config.get('pdf_processing', {})
         self.batch_size = self.processing_config.get('max_claims_per_batch', 10)
+
+        # Mock processing configuration
+        self.use_mock_processing = config.get('development', {}).get('use_mock_processing', False)
+        self.mock_success_rate = config.get('development', {}).get('mock_success_rate', 0.7)
         
         # Setup ultra-arena-frk integration
         self._setup_ultra_arena_integration()
@@ -136,6 +140,11 @@ class PDFProcessor:
     def _process_claim_pdfs(self, claim_id: int, pdf_files: List[str]) -> Dict | None:
         """Process PDF files for a specific claim"""
         try:
+            # Check if we should use mock processing
+            if self.use_mock_processing:
+                logger.info(f"   🧪 Using mock processing (configured)")
+                return self._mock_process_claim_pdfs(claim_id, pdf_files)
+            
             if not self.ultra_arena_available:
                 logger.warning("Ultra Arena not available, using mock processing")
                 return self._mock_process_claim_pdfs(claim_id, pdf_files)
@@ -295,18 +304,56 @@ class PDFProcessor:
         import random
         import time
         
-        logger.info(f"   🧪 Running mock processing for {len(pdf_files)} files")
+        logger.info(f"   🧪 Running mock processing for {len(pdf_files)} files (success rate: {self.mock_success_rate*100}%)")
         
         # Simulate processing time
         time.sleep(random.uniform(1, 3))
         
-        # Generate mock results
-        successful_files = max(1, len(pdf_files) - random.randint(0, 1))
-        failed_files = len(pdf_files) - successful_files
+        # Get actual DMS amounts for this claim to generate realistic mock data
+        try:
+            with self.db_ops.get_bgate_connection() as bgate_conn:
+                query = """
+                    SELECT LABOUR_AMOUNT_DMS, PART_AMOUNT_DMS 
+                    FROM CLAIM_STATUS 
+                    WHERE CLAIM_ID = :claim_id
+                """
+                cursor = bgate_conn.cursor()
+                cursor.execute(query, {'claim_id': claim_id})
+                result = cursor.fetchone()
+                cursor.close()
+                
+                if result:
+                    actual_labour = float(result[0] or 0)
+                    actual_parts = float(result[1] or 0)
+                else:
+                    # Fallback if claim not found
+                    actual_labour = random.uniform(200, 2000)
+                    actual_parts = random.uniform(500, 5000)
+        except Exception as e:
+            logger.warning(f"Could not get actual amounts for claim {claim_id}: {e}")
+            actual_labour = random.uniform(200, 2000)
+            actual_parts = random.uniform(500, 5000)
         
-        # Generate realistic amounts
-        total_pecas = random.uniform(500, 5000)
-        total_mao_obra = random.uniform(200, 2000)
+        # Determine success based on configured rate
+        success_probability = self.mock_success_rate
+        claim_will_match = random.random() < success_probability
+        
+        if claim_will_match:
+            # Generate amounts that will match (within small variance)
+            variance = 0.02  # 2% variance for realistic mock
+            total_mao_obra = actual_labour * random.uniform(1-variance, 1+variance)
+            total_pecas = actual_parts * random.uniform(1-variance, 1+variance)
+            successful_files = len(pdf_files)
+            failed_files = 0
+            logger.debug(f"   🎯 Mock will MATCH: Labour={total_mao_obra:.2f} (actual: {actual_labour:.2f}), Parts={total_pecas:.2f} (actual: {actual_parts:.2f})")
+        else:
+            # Generate amounts that won't match
+            total_mao_obra = actual_labour * random.uniform(0.5, 1.8)  # Significantly different
+            total_pecas = actual_parts * random.uniform(0.3, 2.5)     # Significantly different
+            successful_files = max(1, len(pdf_files) - random.randint(0, 2))  # Some files might fail
+            failed_files = len(pdf_files) - successful_files
+            logger.debug(f"   ❌ Mock will NOT MATCH: Labour={total_mao_obra:.2f} (actual: {actual_labour:.2f}), Parts={total_pecas:.2f} (actual: {actual_parts:.2f})")
+        
         total_diversos = random.uniform(50, 500)
         total_all = total_pecas + total_mao_obra + total_diversos
         
