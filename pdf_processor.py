@@ -1,6 +1,8 @@
 # pdf_processor.py
 import os
 import logging
+import sys
+from pathlib import Path
 from datetime import datetime
 
 import db_handler
@@ -16,6 +18,23 @@ logger = logging.getLogger(__name__)
 # Mock/local processing availability flags
 PDF_PROCESSING_AVAILABLE = True
 
+ULTRA_ARENA_MAIN = Path(__file__).resolve().parents[1] / "ultra-arena-frk" / "Ultra_Arena_Main"
+if str(ULTRA_ARENA_MAIN) not in sys.path:
+    sys.path.append(str(ULTRA_ARENA_MAIN))
+
+from main_modular import run_file_processing_simple  # Ultra Arena entry
+
+def process_pdfs_with_ultra_arena(input_dir: str, pdf_paths: list[str]) -> dict:
+    """
+    Replace mock processing with a real call to Ultra Arena.
+    Returns the structured results dict from Ultra Arena.
+    """
+    input_dir_path = Path(input_dir)
+    file_paths = [Path(p) for p in pdf_paths]
+    return run_file_processing_simple(
+        input_pdf_dir_path=input_dir_path,
+        pdf_file_paths=file_paths
+    )
 
 def process_claims_batch_pdfs_api(max_claims=None):
     """

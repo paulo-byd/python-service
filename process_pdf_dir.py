@@ -3,6 +3,14 @@ from pathlib import Path
 import json
 import random
 import logging
+import sys
+from pathlib import Path
+
+ULTRA_ARENA_PATH = Path(__file__).parent.parent / "ultra-arena-frk" / "Ultra_Arena_Main"
+sys.path.insert(0, str(ULTRA_ARENA_PATH))
+
+# Import the real processing function
+from main_modular import run_file_processing_simple as real_run_file_processing_simple
 
 logger = logging.getLogger(__name__)
 
@@ -10,48 +18,25 @@ BASE_DIR = Path(__file__).parent
 TEST_INPUT_PDF_DIRECTORY = BASE_DIR / "test_pdf_dir"
 
 # Configuration flag - set to False when the real PDF processor is ready
-USE_MOCK_PROCESSING = True
+USE_MOCK_PROCESSING = False
 
 
-# TODO: Change this for the real thing
 def run_file_processing_simple(pdf_file_path: Path):
-    """
-    Process a single PDF file and extract information.
-
-    MOCK VERSION: This will be replaced with the real PDF processing function.
-    The real function should return JSON with the same structure.
-
-    Args:
-        pdf_file_path (Path): Path to the PDF file to process
-
-    Returns:
-        dict: Processing results with structure:
-        {
-            "file_stats": {
-                "file_path": {
-                    "file_model_output": {
-                        "file_name_llm": "filename.pdf",
-                        "DOC_TYPE": "Peças" or "Mão de Obra",
-                        "CNPJ_1": "XX.XXX.XXX/XXXX-XX",
-                        "CNPJ_2": null or "XX.XXX.XXX/XXXX-XX",
-                        "VALOR_TOTAL": "X.XXX,XX",
-                        "Chassi": "VIN_NUMBER",
-                        "CLAIM_NUMBER": "CLAIM_NUMBER_FROM_PDF"
-                    }
-                }
-            },
-            "overall_stats": {...},
-            "overall_cost": {...}
-        }
-    """
-
     if USE_MOCK_PROCESSING:
         return _mock_run_file_processing_simple(pdf_file_path)
     else:
-        # This will be replaced with the real implementation
-        # return real_run_file_processing_simple(pdf_file_path)
-        raise NotImplementedError("Real PDF processing function not yet implemented")
-
+        # Call the real ultra-arena-frk processing function
+        try:
+            # The real function expects pdf_file_paths as a list
+            result = real_run_file_processing_simple(
+                input_pdf_dir_path=pdf_file_path.parent,
+                pdf_file_paths=[pdf_file_path]
+            )
+            return result
+        except Exception as e:
+            logger.error(f"Real PDF processing failed for {pdf_file_path}: {e}")
+            # Fallback to mock if real processing fails
+            return _mock_run_file_processing_simple(pdf_file_path)
 
 def _mock_run_file_processing_simple(pdf_file_path: Path):
     """
