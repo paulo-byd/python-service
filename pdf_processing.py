@@ -400,11 +400,11 @@ class PDFProcessor:
             with self.db_ops.get_bgate_connection() as bgate_conn:
                 stats_query = """
                     SELECT 
-                        AUDIT_STATUS,
+                        PROCESSING_STATUS,
                         COUNT(*) as COUNT
                     FROM CLAIM_STATUS
-                    WHERE AUDIT_STATUS IS NOT NULL
-                    GROUP BY AUDIT_STATUS
+                    WHERE PROCESSING_STATUS IS NOT NULL
+                    GROUP BY PROCESSING_STATUS
                 """
                 
                 stats_df = pd.read_sql(stats_query, bgate_conn)
@@ -412,7 +412,7 @@ class PDFProcessor:
                 if stats_df.empty:
                     return {'total_claims': 0}
                 
-                stats_dict = dict(zip(stats_df['AUDIT_STATUS'], stats_df['COUNT']))
+                stats_dict = dict(zip(stats_df['PROCESSING_STATUS'], stats_df['COUNT']))
                 stats_dict['total_claims'] = stats_df['COUNT'].sum()
                 
                 return stats_dict

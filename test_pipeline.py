@@ -78,6 +78,7 @@ class PipelineTester:
                         cs.ATTACHMENT_STATUS,
                         cs.PROCESSING_STATUS,
                         cs.AUDIT_STATUS,
+                        cs.LAST_DMS_UPDATE_DATE,
                         COUNT(pdf.FILE_ID) as FILE_COUNT
                     FROM CLAIM_STATUS cs
                     JOIN PDF_DOWNLOAD_DMS_CLAIMS pdf ON cs.CLAIM_ID = pdf.CLAIM_ID
@@ -86,7 +87,8 @@ class PipelineTester:
                     AND cs.ATTACHMENT_STATUS = 'COMPLETE'
                     GROUP BY cs.CLAIM_ID, cs.CLAIM_NO, cs.VIN, cs.DEALER_CODE, 
                              cs.LABOUR_AMOUNT_DMS, cs.PART_AMOUNT_DMS, 
-                             cs.ATTACHMENT_STATUS, cs.PROCESSING_STATUS, cs.AUDIT_STATUS
+                             cs.ATTACHMENT_STATUS, cs.PROCESSING_STATUS, cs.AUDIT_STATUS,
+                             cs.LAST_DMS_UPDATE_DATE
                     ORDER BY cs.LAST_DMS_UPDATE_DATE DESC
                     FETCH FIRST :max_claims ROWS ONLY
                 """
