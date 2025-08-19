@@ -243,7 +243,7 @@ class DatabaseOps:
                         cs.PART_AMOUNT_DMS
                     FROM CLAIM_STATUS cs
                     WHERE cs.ATTACHMENT_STATUS = 'COMPLETE'
-                    AND (cs.PROCESSING_STATUS IS NULL OR cs.PROCESSING_STATUS = 'PENDING')
+                    AND (cs.AUDIT_STATUS IS NULL OR cs.AUDIT_STATUS = 'PENDING')
                     AND EXISTS (
                         SELECT 1 
                         FROM PDF_DOWNLOAD_DMS_CLAIMS pdf 
@@ -279,7 +279,7 @@ class DatabaseOps:
                         cs.LABOUR_AMOUNT_PROCESSING,
                         cs.PART_AMOUNT_PROCESSING
                     FROM CLAIM_STATUS cs
-                    WHERE cs.PROCESSING_STATUS = 'COMPLETE'
+                    WHERE cs.AUDIT_STATUS = 'COMPLETE'
                     AND (cs.AUDIT_STATUS IS NULL OR cs.AUDIT_STATUS = 'PENDING')
                     AND cs.LABOUR_AMOUNT_PROCESSING IS NOT NULL
                     AND cs.PART_AMOUNT_PROCESSING IS NOT NULL
@@ -422,7 +422,7 @@ class DatabaseOps:
                     UPDATE CLAIM_STATUS 
                     SET LABOUR_AMOUNT_PROCESSING = :labour_amount,
                         PART_AMOUNT_PROCESSING = :part_amount,
-                        PROCESSING_STATUS = 'COMPLETE',
+                        AUDIT_STATUS = 'COMPLETE',
                         PROCESSING_DATE = CURRENT_TIMESTAMP,
                         LAST_MODIFIED_DATE = CURRENT_TIMESTAMP
                     WHERE CLAIM_ID = :claim_id
