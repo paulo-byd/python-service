@@ -106,7 +106,7 @@ class DatabaseOps:
                     SELECT CLAIM_ID, LAST_DMS_UPDATE_DATE, ATTACHMENT_STATUS
                     FROM CLAIM_STATUS
                 """
-                local_claims_df = pd.read_sql(local_claims_query, bgate_conn)
+                local_claims_df = pd.read_sql(local_claims_query, bgate_conn) # type: ignore
             
             # Get claims from DMS
             with self.get_dms_connection() as dms_conn:
@@ -145,7 +145,7 @@ class DatabaseOps:
                 
                 dms_claims_df = pd.read_sql(
                     dms_claims_query,
-                    dms_conn,
+                    dms_conn, # type: ignore
                     params={'region_id': region_id, 'status_id': status_id}
                 )
             
@@ -203,7 +203,7 @@ class DatabaseOps:
                     ORDER BY files.CREATE_DATE ASC
                 """
                 
-                files_df = pd.read_sql(files_query, dms_conn, params={'claim_id': claim_id})
+                files_df = pd.read_sql(files_query, dms_conn, params={'claim_id': claim_id}) # type: ignore
                 
                 # Filter out files we already have successfully downloaded
                 if not files_df.empty:
@@ -215,7 +215,7 @@ class DatabaseOps:
                             AND STATUS = 'SUCCESS'
                             AND IS_LATEST_VERSION = 'Y'
                         """
-                        existing_df = pd.read_sql(existing_files_query, bgate_conn, params={'claim_id': claim_id})
+                        existing_df = pd.read_sql(existing_files_query, bgate_conn, params={'claim_id': claim_id}) # type: ignore
                         
                         if not existing_df.empty:
                             existing_file_ids = existing_df['FILE_ID'].tolist()
@@ -254,7 +254,7 @@ class DatabaseOps:
                     ORDER BY cs.LAST_DMS_UPDATE_DATE DESC
                 """
                 
-                result_df = pd.read_sql(query, bgate_conn)
+                result_df = pd.read_sql(query, bgate_conn) # type: ignore
                 logger.info(f"Found {len(result_df)} claims ready for processing")
                 return result_df
                 
@@ -286,7 +286,7 @@ class DatabaseOps:
                     ORDER BY cs.PROCESSING_DATE DESC
                 """
                 
-                result_df = pd.read_sql(query, bgate_conn)
+                result_df = pd.read_sql(query, bgate_conn) # type: ignore
                 logger.info(f"Found {len(result_df)} claims ready for matching")
                 return result_df
                 
@@ -596,7 +596,7 @@ class DatabaseOps:
                     GROUP BY STATUS
                 """
                 
-                stats_df = pd.read_sql(stats_query, bgate_conn)
+                stats_df = pd.read_sql(stats_query, bgate_conn) # type: ignore
                 
                 if stats_df.empty:
                     return {'total_files': 0}

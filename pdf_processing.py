@@ -133,7 +133,7 @@ class PDFProcessor:
         
         return claims_processed
     
-    def _process_claim_pdfs(self, claim_id: int, pdf_files: List[str]) -> Dict:
+    def _process_claim_pdfs(self, claim_id: int, pdf_files: List[str]) -> Dict | None:
         """Process PDF files for a specific claim"""
         try:
             if not self.ultra_arena_available:
