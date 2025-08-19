@@ -240,7 +240,8 @@ class DatabaseOps:
                         cs.DEALER_NAME,
                         cs.GROSS_CREDIT,
                         cs.LABOUR_AMOUNT_DMS,
-                        cs.PART_AMOUNT_DMS
+                        cs.PART_AMOUNT_DMS,
+                        cs.LAST_DMS_UPDATE_DATE
                     FROM CLAIM_STATUS cs
                     WHERE cs.ATTACHMENT_STATUS = 'COMPLETE'
                     AND (cs.PROCESSING_STATUS IS NULL OR cs.PROCESSING_STATUS = 'PENDING')
