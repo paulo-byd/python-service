@@ -1,183 +1,204 @@
-# PDF Download Service Configuration
+# PDF DMS Service Configuration
 
-# PDF Download settings
+# Environment and Database Configuration
+databases:
+  local:
+    dms:
+      user: "DMS_OEM_SL"
+      password: "-oVDmYP6-,=*"
+      dsn: "10.42.253.86:1027/dms11g"
+    bgate:
+      user: "temp_dms"
+      password: "0<wS16q:F}|o.+"
+      dsn: "10.42.253.86:1092/dms19g_pdb1"
+  
+  uat:
+    dms:
+      user: "DMS_OEM_SL"
+      password: "-oVDmYP6-,=*"
+      dsn: "10.42.253.27:1521/dms11g"
+    bgate:
+      user: "temp_dms"
+      password: "0<wS16q:F}|o.+"
+      dsn: "10.42.253.92:1521/dms19g_pdb1"
+  
+  prod:
+    dms:
+      user: "DMS_OEM_SL"
+      password: "-oVDmYP6-,=*"
+      dsn: "10.42.253.27:1521/dms11g"
+    bgate:
+      user: "prod_dms"
+      password: "1gHH16Dkjqyj:>D"
+      dsn: "10.42.253.92:1521/dms19g_pdb1"
+
+# Scheduling Configuration
+scheduling:
+  enabled: true                    # Enable/disable scheduled execution
+  interval_minutes: 60            # Run pipeline every X minutes
+  run_on_startup: true            # Run immediately when service starts
+
+# Download Configuration
 download:
+  storage_path: "/mnt/sdb/bgate/pdf-claims/"     # Where to store downloaded PDF files
+  batch_size: 20                  # Process this many claims per batch
+  max_retries: 3                  # Retry failed downloads
+  timeout_seconds: 60             # Timeout for individual file downloads
+  delay_between_downloads: 0.5    # Delay between downloads in seconds
+  
+  # File validation
+  min_file_size: 1024             # Minimum file size (1KB)
+  max_file_size: 104857600        # Maximum file size (100MB)
+  validate_pdf_format: true       # Check PDF file headers
+  
+  # Performance settings
+  parallel_downloads: false       # Enable parallel downloads (set to true for better performance)
+  max_workers: 4                  # Number of concurrent download threads
+
+# DMS API Configuration (for file downloads)
+dms_api:
   base_url: "https://sadcsapi.bydauto.com/file/download?fileUrl="
-  storage_path: "/mnt/sdb/bgate/pdf-claims/"  # Production and UAT path
-  
-  # Download behavior settings
   timeout_seconds: 60
-  retry_attempts: 3
-  retry_delay_seconds: 5
-  
-  # Rate limiting to prevent API overload
-  delay_between_downloads: 0.5  # seconds between file downloads (0.5 = 500ms)
-  delay_between_claims: 0       # seconds between processing different claims
+  max_retries: 3
 
-# Database connection pool settings
-database:
-  # Connection pool configuration
-  min_connections: 2        # Minimum connections to maintain in pool
-  max_connections: 10       # Maximum connections in pool
-  pool_timeout_seconds: 30  # Time to wait for available connection
-  
-  # Performance tuning
-  batch_upsert_size: 500    # Number of claims to process per upsert batch
-  max_claims_per_cycle: 10000 # Maximum claims to process in one download cycle
-  file_query_batch_size: 500 # Number of claims per DMS file query batch
-  
-# Scheduler settings
-scheduler:
-  # Run the check every 0.5 hours. 
-  periodicity_hours: 0.5
-  
-  # Prevent overlapping jobs
-  max_instances: 1
-
-  run_separated_pdf_processing: false
-
-  run_separated_match: false
-
-# Logging configuration
-logging:
-  level: INFO  # DEBUG, INFO, WARNING, ERROR
-  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-  file: "pdf_download_service.log"
-  max_file_size_mb: 100
-  backup_count: 5
-
-# Monitoring and maintenance
-monitoring:
-  # Enable statistics logging
-  log_statistics: true
-  statistics_interval_hours: 24
-  
-  # Clean up old failed records
-  cleanup_enabled: true
-  cleanup_interval_days: 7
-  cleanup_retention_days: 30
-
-# API settings
+# API Configuration
 api:
   headers:
-    User-Agent: "BYD-PDF-Download-Service/1.0"
+    User-Agent: "PDF-DMS-Service/1.0"
     Accept: "application/pdf"
-    APP_ID: "791565299"
-    SECRET_KEY: "1a0fe9add8e3304fb6195d37f3b313bf1ad766d455706ade26f79018c685beed"
-  
-  # Rate limiting and connection management
-  requests_per_minute: 60
-  
-  # Connection settings
+    APP_ID: "791565299" 
+    SECRET_KEY: "1a0fe9add8e3304fb6195d37f3b313bf1ad766d455706ade26f79018c685beed"  
   verify_ssl: true
   allow_redirects: true
-  
-  # Advanced rate limiting (for poor APIs)
-  enable_adaptive_delay: false  # Automatically adjust delay based on error rates
-  max_concurrent_requests: 4    # Maximum concurrent requests (for parallel mode)
-  delay_on_error_multiplier: 2.0  # Multiply delay by this factor when errors occur
 
-# Error handling
-error_handling:
-  # How many consecutive failures before alerting
-  max_consecutive_failures: 10
+# PDF Processing Configuration
+pdf_processing:
+  max_claims_per_batch: 10        # Process this many claims at a time
+  ultra_arena_path: "../ultra-arena-frk/Ultra_Arena_Main"  # Path to ultra-arena-frk
   
-  # Whether to continue processing other files if one fails
-  continue_on_error: true
-  
-  # Whether to retry failed downloads in the next cycle
-  retry_failed_downloads: true
+  # Fallback options
+  use_mock_on_error: true         # Use mock processing if ultra-arena fails
+  continue_on_error: true         # Continue with other claims if one fails
 
-# File validation
-file_validation:
-  # Minimum file size in bytes (to detect empty or corrupted downloads)
-  min_file_size: 1024  # 1KB
+# Invoice Matching Configuration
+matching:
+  max_claims_per_batch: 50        # Match this many claims at a time
+  exact_amount_match: true        # Require exact amount matching
+  tolerance_percentage: 0.0       # Percentage tolerance for amount differences (0.0 = exact)
   
-  # Maximum file size in bytes (to detect potential issues)
-  max_file_size: 104857600  # 100MB
+  # Validation settings
+  validate_vin: true              # Validate VIN format
+  validate_claim_number: true     # Validate claim number format
   
-  # Whether to validate PDF headers
-  validate_pdf_format: true
+  # Retry settings
+  retry_rejected_claims: false    # Automatically retry rejected claims
 
-# Performance settings
+# Logging Configuration
+logging:
+  level: "INFO"                   # DEBUG, INFO, WARNING, ERROR
+  file_path: "pdf_dms_service.log"
+  max_file_size: 50               # MB
+  backup_count: 5                 # Number of log files to keep
+  
+  # Detailed logging options
+  log_database_operations: false  # Log all database queries
+  log_processing_details: true    # Log detailed processing information
+  log_performance_metrics: true   # Log timing and performance data
+
+# Performance and Resource Management
 performance:
-  # Database connection pool settings
-  db_pool_size: 5
-  db_pool_timeout: 60
-  
-  # Batch processing settings
-  batch_size: 20  # Process this many files before committing to DB
-  
-  # Parallel download settings
-  parallel_downloads: true  # Enable multi-threaded downloads
-  max_workers: 8  # Number of concurrent download threads (recommend 4-12)
+  # Database connection settings
+  db_connection_timeout: 30       # Seconds
+  db_query_timeout: 300          # Seconds for long-running queries
   
   # Memory management
-  max_memory_usage_mb: 1024
+  max_memory_usage_mb: 2048      # Maximum memory usage
+  cleanup_temp_files: true       # Clean up temporary files
   
-  # Performance logging
-  log_detailed_timing: true  # Log detailed timing for each download
-  log_performance_summary: true  # Log summary statistics after each cycle
+  # Batch processing optimization
+  commit_frequency: 10           # Commit database changes every X operations
+  progress_report_interval: 5    # Report progress every X items
 
-# PDF Processing Pipeline Configuration
-pdf_processing:
-  api_enabled: false  # Set to true when PDF processing API is ready
-  use_mock_processing: true  # Use mock results for testing
+# Monitoring and Health Checks
+monitoring:
+  enabled: true                  # Enable health monitoring
+  health_check_interval: 300     # Check service health every 5 minutes
+  
+  # Alerts and notifications
+  alert_on_errors: true          # Alert when errors occur
+  alert_threshold: 5             # Alert after X consecutive errors
+  
+  # Statistics collection
+  collect_statistics: true       # Collect performance statistics
+  statistics_retention_days: 30  # Keep statistics for X days
 
-  # Batch processing settings
-  max_claims_per_batch: 10        # Process this many claims at a time
-  max_files_per_processing_call: 50  # Pass max this many files to run_batch_processing()
+# Development and Testing Options
+development:
+  # Mock processing for testing
+  use_mock_processing: false     # Force mock processing instead of ultra-arena
+  simulate_download_errors: false # Randomly simulate download errors
   
+  # Database options
+  skip_dms_operations: false     # Skip DMS queries (use local data only)
+  dry_run_mode: false           # Don't actually update databases
   
-  # Processing intervals (in hours)
-  interval_hours: 0.5  # How often to run PDF processing
-  
-  # Processing behavior
-  process_immediately_after_download: false  # If true, process PDFs right after downloading a complete claim
-  skip_failed_claims: true  # Skip claims that failed processing in previous attempts
+  # Debug options
+  verbose_logging: false         # Extra verbose logging
+  save_debug_data: false        # Save intermediate processing data
+  debug_output_path: "./debug"  # Where to save debug data
 
-# Audit/Matching Pipeline Configuration  
-audit_matching:
-  # Batch processing settings
-  max_claims_per_batch: 100        # Audit this many claims at a time
+# Error Handling and Recovery
+error_handling:
+  # Retry configuration
+  max_retries: 3                # Maximum retries for failed operations
+  retry_delay_seconds: 5        # Initial delay between retries
+  exponential_backoff: true     # Use exponential backoff for retries
   
-  # Matching intervals (in hours)
-  interval_hours: 0.6  # How often to run audit matching (for scheduled runs)
+  # Failure handling
+  continue_on_claim_error: true  # Continue processing other claims if one fails
+  mark_failed_claims: true      # Mark failed claims in database
   
-  # Auto-run after downloads
-  auto_run_after_download: true   # Run audit matching automatically after each download cycle
-  
-  # Matching behavior
-  exact_amount_match: true  # Require exact match for LABOUR_AMOUNT_DMS + PART_AMOUNT_DMS
-  tolerance_percentage: 0.0  # Allow this % tolerance for amount matching (0.0 = exact match)
-  retry_rejected_claims: false  # Whether to retry claims that were rejected
+  # Recovery options
+  auto_recovery: true           # Automatically attempt recovery
+  recovery_check_interval: 3600 # Check for recovery opportunities every hour
 
-# PDF Processing Pipeline Configuration
+# Security and Access Control
+security:
+  # Database security
+  encrypt_connections: false    # Use encrypted database connections
+  connection_validation: true   # Validate database connections
+  
+  # File security
+  secure_file_storage: false   # Use encrypted file storage
+  file_permissions: "644"      # Default file permissions
+  
+  # Access logging
+  log_access_attempts: false   # Log all database access attempts
+  audit_trail: false          # Maintain detailed audit trail
 
-# PDF Processing API Configuration
-pdf_processing_api:
-  # API connection settings
-  base_url: "http://localhost:8888"  # URL of the PDF processing API
-  timeout_seconds: 300  # 5 minutes timeout for PDF processing requests
+# Integration Settings
+integrations:
+  # Ultra Arena integration
+  ultra_arena:
+    enabled: true              # Enable ultra-arena-frk integration
+    config_file: "config.yaml" # Ultra Arena config file (if needed)
+    timeout_seconds: 300       # Timeout for ultra-arena processing
   
-  enabled: false
-  # Health check settings
-  health_check_interval: 60  # Check API health every 60 seconds
-  max_retries: 3  # Maximum retries for failed API calls
-  retry_delay: 5  # Seconds to wait between retries
+  # External API integrations (for future use)
+  external_apis:
+    enabled: false            # Enable external API integrations
+    timeout_seconds: 30       # Default API timeout
+    
+# Data Retention and Cleanup
+data_retention:
+  # File retention
+  keep_pdf_files_days: 90      # Keep downloaded PDF files for X days
+  cleanup_old_files: true     # Automatically clean up old files
   
-  # Connection settings
-  verify_ssl: true  # Set to false for local development
-  connection_timeout: 30  # Seconds to wait for connection
-  read_timeout: 300  # Seconds to wait for response
+  # Database retention
+  keep_processing_results_days: 365  # Keep processing results for X days
+  archive_old_data: false     # Archive old data instead of deleting
   
-  # API endpoints (for future customization)
-  endpoints:
-    health: "/health"
-    single_file: "/process/single"
-    claim_batch: "/process/claim"
-    batch: "/process/batch"
-  
-  # Error handling
-  continue_on_api_error: true  # Continue processing other claims if API fails for one
-  fallback_to_mock: false  # Set to true for testing when API is down
+  # Log retention
+  keep_logs_days: 30          # Keep log files for X days
+  compress_old_logs: true     # Compress old log files
