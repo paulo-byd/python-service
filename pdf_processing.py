@@ -1,10 +1,12 @@
 """
 pdf_processing.py - Simplified PDF Processing Service
-Processes PDF files using the ultra-arena-frk project
+Processes PDF files using the ultra-arena-frk project or REST API
 """
 
 import logging
 import sys
+import requests
+import json
 from pathlib import Path
 from typing import Dict, List
 import pandas as pd
@@ -13,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 
 class PDFProcessor:
-    """Processes PDF files using ultra-arena-frk"""
+    """Processes PDF files using ultra-arena-frk or REST API"""
     
     def __init__(self, config: Dict, db_ops):
         """Initialize PDF processor with configuration and database operations"""
@@ -26,10 +28,18 @@ class PDFProcessor:
         self.use_mock_processing = config.get('development', {}).get('use_mock_processing', False)
         self.mock_success_rate = config.get('development', {}).get('mock_success_rate', 0.7)
         
+        # API processing configuration
+        self.use_api_processing = self.processing_config.get('use_api_processing', False)
+        self.api_config = self.processing_config.get('api', {})
+        
         # Setup ultra-arena-frk integration
         self._setup_ultra_arena_integration()
         
         logger.info("PDF processor initialized")
+        if self.use_api_processing:
+            logger.info("🔄 API processing mode enabled")
+        else:
+            logger.info("🔄 Local processing mode enabled")
     
     def _setup_ultra_arena_integration(self):
         """Setup integration with ultra-arena-frk project"""
@@ -146,10 +156,28 @@ class PDFProcessor:
                 logger.info(f"   🧪 Using mock processing (configured)")
                 return self._mock_process_claim_pdfs(claim_id, pdf_files)
             
+            # Check if we should use API processing
+            if self.use_api_processing:
+                logger.info(f"   🌐 Using API processing (configured)")
+                return self._api_process_claim_pdfs(claim_id, pdf_files)
+            
+            # Check if ultra-arena is available for local processing
             if not self.ultra_arena_available:
                 logger.warning("Ultra Arena not available, using mock processing")
                 return self._mock_process_claim_pdfs(claim_id, pdf_files)
             
+            # Use local ultra-arena processing
+            logger.info(f"    Using local ultra-arena-frk processing...")
+            return self._local_process_claim_pdfs(claim_id, pdf_files)
+            
+        except Exception as e:
+            logger.error(f"   ❌ Processing failed: {e}")
+            logger.warning("   🔄 Falling back to mock processing")
+            return self._mock_process_claim_pdfs(claim_id, pdf_files)
+    
+    def _local_process_claim_pdfs(self, claim_id: int, pdf_files: List[str]) -> Dict | None:
+        """Process PDF files using local ultra-arena-frk"""
+        try:
             # Convert file paths to Path objects
             pdf_paths = [Path(pdf_file) for pdf_file in pdf_files if Path(pdf_file).exists()]
             
@@ -160,8 +188,7 @@ class PDFProcessor:
             # Use the first PDF's directory as input directory
             input_dir = pdf_paths[0].parent
             
-            logger.info(f"   🚀 Running ultra-arena-frk processing...")
-            logger.info(f"   📁 Input directory: {input_dir}")
+            logger.info(f"    Input directory: {input_dir}")
             logger.info(f"   📄 Files: {[p.name for p in pdf_paths]}")
             
             # Call ultra-arena-frk processing function
@@ -173,13 +200,119 @@ class PDFProcessor:
             # Validate and format results
             formatted_results = self._format_processing_results(processing_results, claim_id)
             
-            logger.info(f"   ✅ Ultra Arena processing completed")
+            logger.info(f"   ✅ Local Ultra Arena processing completed")
             return formatted_results
             
         except Exception as e:
-            logger.error(f"   ❌ Ultra Arena processing failed: {e}")
-            logger.warning("   🔄 Falling back to mock processing")
-            return self._mock_process_claim_pdfs(claim_id, pdf_files)
+            logger.error(f"   ❌ Local Ultra Arena processing failed: {e}")
+            raise
+    
+    def _api_process_claim_pdfs(self, claim_id: int, pdf_files: List[str]) -> Dict | None:
+        """Process PDF files using REST API"""
+        try:
+            # Convert file paths to Path objects and validate
+            pdf_paths = [Path(pdf_file) for pdf_file in pdf_files if Path(pdf_file).exists()]
+            
+            if not pdf_paths:
+                logger.error(f"No valid PDF files found for claim {claim_id}")
+                return None
+            
+            # Use the first PDF's directory as input directory
+            input_dir = pdf_paths[0].parent
+            
+            logger.info(f"   🌐 API endpoint: {self.api_config.get('base_url', 'N/A')}")
+            logger.info(f"    Input directory: {input_dir}")
+            logger.info(f"   📄 Files: {[p.name for p in pdf_paths]}")
+            
+            # Prepare API request payload
+            payload = {
+                "input_pdf_dir_path": str(input_dir),
+                "pdf_file_paths": [str(p) for p in pdf_paths],
+                "claim_id": claim_id,
+                "processing_options": self.api_config.get('processing_options', {})
+            }
+            
+            # Make API call
+            api_response = self._make_api_call(payload)
+            
+            if api_response:
+                # Format API response to match expected structure
+                formatted_results = self._format_processing_results(api_response, claim_id)
+                logger.info(f"   ✅ API processing completed")
+                return formatted_results
+            else:
+                logger.error(f"   ❌ API processing failed")
+                return None
+                
+        except Exception as e:
+            logger.error(f"   ❌ API processing failed: {e}")
+            raise
+    
+    def _make_api_call(self, payload: Dict) -> Dict | None:
+        """Make REST API call to PDF processing service"""
+        try:
+            # Get API configuration
+            base_url = self.api_config.get('base_url')
+            endpoint = self.api_config.get('endpoint', '/process-pdfs')
+            timeout = self.api_config.get('timeout_seconds', 300)
+            max_retries = self.api_config.get('max_retries', 3)
+            
+            if not base_url:
+                logger.error("API base URL not configured")
+                return None
+            
+            # Prepare headers
+            headers = {
+                'Content-Type': 'application/json',
+                'User-Agent': 'PDF-DMS-Service/1.0'
+            }
+            
+            # Add authentication if configured
+            api_key = self.api_config.get('api_key')
+            if api_key:
+                headers['Authorization'] = f'Bearer {api_key}'
+            
+            # Add custom headers if configured
+            custom_headers = self.api_config.get('custom_headers', {})
+            headers.update(custom_headers)
+            
+            # Construct full URL
+            url = f"{base_url.rstrip('/')}{endpoint}"
+            
+            logger.debug(f"Making API call to: {url}")
+            logger.debug(f"Payload: {json.dumps(payload, indent=2)}")
+            
+            # Make the API call with retry logic
+            for attempt in range(max_retries):
+                try:
+                    response = requests.post(
+                        url,
+                        json=payload,
+                        headers=headers,
+                        timeout=timeout
+                    )
+                    
+                    response.raise_for_status()
+                    
+                    # Parse response
+                    result = response.json()
+                    
+                    logger.debug(f"API response: {json.dumps(result, indent=2)}")
+                    
+                    return result
+                    
+                except requests.exceptions.RequestException as e:
+                    logger.warning(f"API call attempt {attempt + 1} failed: {e}")
+                    if attempt < max_retries - 1:
+                        import time
+                        time.sleep(2 ** attempt)  # Exponential backoff
+                    else:
+                        logger.error(f"All {max_retries} API call attempts failed")
+                        return None
+                        
+        except Exception as e:
+            logger.error(f"Error making API call: {e}")
+            return None
     
     def _format_processing_results(self, raw_results: Dict, claim_id: int) -> Dict:
         """Format raw processing results into expected structure"""
@@ -287,12 +420,12 @@ class PDFProcessor:
             amount_str = amount_str.replace('R$', '').replace('$', '').strip()
             
             # Handle Brazilian decimal format
-            if ',' in amount_str and '.' in amount_str:
+            if ',' in amount_str and '.' in str(amount_str):
                 # Format: 1.234,56
-                amount_str = amount_str.replace('.', '').replace(',', '.')
-            elif ',' in amount_str:
+                amount_str = str(amount_str).replace('.', '').replace(',', '.')
+            elif ',' in str(amount_str):
                 # Format: 1234,56
-                amount_str = amount_str.replace(',', '.')
+                amount_str = str(amount_str).replace(',', '.')
             
             return float(amount_str)
             

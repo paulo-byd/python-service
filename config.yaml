@@ -76,6 +76,28 @@ pdf_processing:
   max_claims_per_batch: 10        # Process this many claims at a time
   ultra_arena_path: "../ultra-arena-frk/Ultra_Arena_Main"  # Path to ultra-arena-frk
   
+  # Processing mode selection
+  use_api_processing: false       # Set to true to use REST API instead of local processing
+  
+  # API Configuration (when use_api_processing is true)
+  api:
+    base_url: "https://your-api-server.com"  # Base URL of your PDF processing API
+    endpoint: "/process-pdfs"                 # API endpoint for PDF processing
+    timeout_seconds: 300                      # API timeout in seconds
+    max_retries: 3                            # Number of retry attempts for failed API calls
+    api_key: "your-api-key-here"             # API key for authentication (optional)
+    
+    # Custom headers (optional)
+    custom_headers:
+      X-Custom-Header: "custom-value"
+      X-Client-ID: "pdf-dms-service"
+    
+    # Processing options to send to API (optional)
+    processing_options:
+      enable_ocr: true
+      language: "pt-BR"
+      confidence_threshold: 0.8
+  
   # Fallback options
   use_mock_on_error: true         # Use mock processing if ultra-arena fails
   continue_on_error: true         # Continue with other claims if one fails
