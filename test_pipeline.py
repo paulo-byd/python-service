@@ -17,6 +17,7 @@ without running the full scheduler or download process.
 import argparse
 import logging
 import yaml
+import pandas as pd
 from datetime import datetime
 from pathlib import Path
 
@@ -141,7 +142,6 @@ class PipelineTester:
                     FETCH FIRST :max_claims ROWS ONLY
                 """
                 
-                import pandas as pd
                 claims_df = pd.read_sql(query, bgate_conn, params={'max_claims': max_claims}) # type: ignore
                 
                 if claims_df.empty:

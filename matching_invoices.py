@@ -322,7 +322,6 @@ class InvoiceMatcher:
                         cs.LABOUR_AMOUNT_PROCESSING,
                         cs.PART_AMOUNT_PROCESSING,
                         cs.AUDIT_STATUS,
-                        cs.AUDIT_REASON,
                         cs.AUDIT_DATE,
                         (cs.LABOUR_AMOUNT_DMS + cs.PART_AMOUNT_DMS) as DMS_TOTAL,
                         (cs.LABOUR_AMOUNT_PROCESSING + cs.PART_AMOUNT_PROCESSING) as PROCESSING_TOTAL,
