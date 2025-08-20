@@ -34,11 +34,11 @@ class PDFProcessor:
     def _setup_ultra_arena_integration(self):
         """Setup integration with ultra-arena-frk project"""
         try:
-            # Add ultra-arena-frk to Python path
             ultra_arena_path = Path(__file__).parent.parent / "ultra-arena-frk" / "Ultra_Arena_Main"
             
             if not ultra_arena_path.exists():
-                logger.warning(f"Ultra Arena path not found: {ultra_arena_path}")
+                logger.error(f"Ultra Arena path not found: {ultra_arena_path}")
+                logger.error("Please ensure ultra-arena-frk project is properly installed")
                 self.ultra_arena_available = False
                 return
             
@@ -53,7 +53,8 @@ class PDFProcessor:
             logger.info("✅ Ultra Arena integration setup successful")
             
         except ImportError as e:
-            logger.warning(f"⚠️ Could not import ultra-arena-frk: {e}")
+            logger.error(f"❌ Could not import ultra-arena-frk: {e}")
+            logger.error("Please check ultra-arena-frk installation and dependencies")
             self.ultra_arena_available = False
         except Exception as e:
             logger.error(f"❌ Error setting up ultra-arena-frk integration: {e}")
