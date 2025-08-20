@@ -418,7 +418,6 @@ class PipelineTester:
                 query = f"""
                     UPDATE CLAIM_STATUS 
                     SET AUDIT_STATUS = NULL,
-                        AUDIT_REASON = NULL,
                         AUDIT_DATE = NULL,
                         LAST_MODIFIED_DATE = CURRENT_TIMESTAMP
                     WHERE CLAIM_ID IN ({placeholders})

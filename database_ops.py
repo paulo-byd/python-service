@@ -447,14 +447,13 @@ class DatabaseOps:
             logger.error(f"Error saving processing results for claim {claim_id}: {e}")
             return False
     
-    def update_audit_status(self, claim_id: int, audit_status: str, reason: str | None = None):
+    def update_audit_status(self, claim_id: int, audit_status: str):
         """Update audit/matching status for a claim"""
         try:
             with self.get_bgate_connection() as bgate_conn:
                 update_query = """
                     UPDATE CLAIM_STATUS 
                     SET AUDIT_STATUS = :audit_status,
-                        AUDIT_REASON = :reason,
                         AUDIT_DATE = CURRENT_TIMESTAMP,
                         LAST_MODIFIED_DATE = CURRENT_TIMESTAMP
                     WHERE CLAIM_ID = :claim_id
@@ -463,7 +462,6 @@ class DatabaseOps:
                 cursor = bgate_conn.cursor()
                 cursor.execute(update_query, {
                     'audit_status': audit_status,
-                    'reason': reason,
                     'claim_id': claim_id
                 })
                 
