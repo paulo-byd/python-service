@@ -203,9 +203,38 @@ class PipelineTester:
         
         # Step 1: Process PDFs
         logger.info("🔄 Step 1: Processing PDFs...")
-        processing_results = self.pdf_processor.process_pending_claims()
+        processing_completed = 0
         
-        processing_completed = processing_results.get('claims_processed', 0)
+        for _, claim_row in claims_df.iterrows():
+            claim_id = int(claim_row['CLAIM_ID'])
+            try:
+                logger.info(f"🔄 Processing PDFs for test CLAIM_ID {claim_id}")
+                
+                # Get PDF files for this specific claim
+                pdf_files = self.db_ops.get_claim_pdf_files(claim_id)
+                
+                if not pdf_files:
+                    logger.warning(f"   ⚠️ No PDF files found for CLAIM_ID {claim_id}")
+                    continue
+                
+                # Process this specific claim
+                processing_results = self.pdf_processor._process_claim_pdfs(claim_id, pdf_files)
+                
+                if processing_results:
+                    # Save results to database
+                    success = self.db_ops.save_processing_results(claim_id, processing_results)
+                    if success:
+                        processing_completed += 1
+                        logger.info(f"   ✅ Successfully processed CLAIM_ID {claim_id}")
+                    else:
+                        logger.error(f"   ❌ Failed to save results for CLAIM_ID {claim_id}")
+                else:
+                    logger.error(f"   ❌ Processing failed for CLAIM_ID {claim_id}")
+                    
+            except Exception as e:
+                logger.error(f"   ❌ Error processing CLAIM_ID {claim_id}: {e}")
+                continue
+        
         logger.info(f"   ✅ Processing completed: {processing_completed} claims")
         
         if processing_completed == 0:
@@ -219,11 +248,56 @@ class PipelineTester:
         
         # Step 2: Match invoices
         logger.info("🎯 Step 2: Matching invoices...")
-        matching_results = self.matcher.match_pending_claims()
+        matching_completed = 0
+        matching_successful = 0
+        matching_rejected = 0
         
-        matching_completed = matching_results.get('claims_processed', 0)
-        matching_successful = matching_results.get('claims_matched', 0)
-        matching_rejected = matching_results.get('claims_rejected', 0)
+        for claim_id in claim_ids:
+            try:
+                # Get updated claim data after processing
+                with self.db_ops.get_bgate_connection() as bgate_conn:
+                    query = """
+                        SELECT 
+                            cs.CLAIM_ID,
+                            cs.CLAIM_NO,
+                            cs.VIN,
+                            cs.DEALER_CODE,
+                            cs.DEALER_NAME,
+                            cs.LABOUR_AMOUNT_DMS,
+                            cs.PART_AMOUNT_DMS,
+                            cs.LABOUR_AMOUNT_PROCESSING,
+                            cs.PART_AMOUNT_PROCESSING
+                        FROM CLAIM_STATUS cs
+                        WHERE cs.CLAIM_ID = :claim_id
+                        AND cs.PROCESSING_STATUS = 'COMPLETE'
+                    """
+                    
+                    import pandas as pd
+                    claim_df = pd.read_sql(query, bgate_conn, params={'claim_id': claim_id}) # type: ignore
+                    
+                    if claim_df.empty:
+                        logger.warning(f"   ⚠️ CLAIM_ID {claim_id} not ready for matching")
+                        continue
+                    
+                    # Perform matching for this specific claim
+                    claim_row = claim_df.iloc[0]
+                    match_result = self.matcher._match_claim(claim_row)
+                    
+                    # Update audit status based on matching result
+                    if match_result['match_success']:
+                        self.db_ops.update_audit_status(claim_id, 'COMPLETE', match_result['reason'])
+                        matching_successful += 1
+                        logger.info(f"   ✅ CLAIM_ID {claim_id}: Match successful - {match_result['reason']}")
+                    else:
+                        self.db_ops.update_audit_status(claim_id, 'REJECTED', match_result['reason'])
+                        matching_rejected += 1
+                        logger.warning(f"   ❌ CLAIM_ID {claim_id}: Match failed - {match_result['reason']}")
+                    
+                    matching_completed += 1
+                    
+            except Exception as e:
+                logger.error(f"   ❌ Error matching CLAIM_ID {claim_id}: {e}")
+                continue
         
         total_time = datetime.now() - start_time
         
