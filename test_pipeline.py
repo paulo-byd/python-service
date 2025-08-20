@@ -60,7 +60,55 @@ class PipelineTester:
         except Exception as e:
             logger.error(f"Failed to load config: {e}")
             raise
-    
+   
+    def pretty_print_processing_results(self, claim_id: int, processing_results):
+        """Pretty print the processing results for debugging"""
+        logger.info("=" * 80)
+        logger.info(f"🔍 DETAILED PROCESSING RESULTS FOR CLAIM_ID {claim_id}")
+        logger.info("=" * 80)
+        
+        # Summary section
+        summary = processing_results.get('processing_summary', {})
+        logger.info("📊 PROCESSING SUMMARY:")
+        logger.info(f"   Files processed: {processing_results.get('files_processed', 0)}")
+        logger.info(f"   Successful files: {summary.get('successful_files', 0)}")
+        logger.info(f"   Failed files: {summary.get('failed_files', 0)}")
+        logger.info(f"   Total amount (all): R$ {summary.get('total_amount_all', 0.0):.2f}")
+        logger.info(f"   Parts amount: R$ {summary.get('total_amount_pecas', 0.0):.2f}")
+        logger.info(f"   Labour amount: R$ {summary.get('total_amount_mao_obra', 0.0):.2f}")
+        logger.info(f"   Misc amount: R$ {summary.get('total_amount_diversos', 0.0):.2f}")
+        
+        # File-by-file breakdown
+        file_stats = processing_results.get('file_stats', {})
+        if file_stats:
+            logger.info("\n📄 FILE-BY-FILE BREAKDOWN:")
+            for i, (file_path, file_data) in enumerate(file_stats.items(), 1):
+                file_name = Path(file_path).name
+                logger.info(f"\n   📋 File {i}: {file_name}")
+                
+                if 'error' in file_data:
+                    logger.info(f"      ❌ Error: {file_data['error']}")
+                else:
+                    # Show key information from Ultra Arena
+                    key_info = file_data.get('key_information', 'N/A')
+                    summary_text = file_data.get('summary', 'N/A')
+                    
+                    logger.info(f"      ✅ Status: Success")
+                    logger.info(f"      📝 Key Info: {key_info}")
+                    logger.info(f"      📄 Summary: {summary_text}")
+                    
+                    # Show token usage if available
+                    if 'total_token_count' in file_data:
+                        logger.info(f"      🔢 Tokens used: {file_data['total_token_count']}")
+        
+        # Raw Ultra Arena output (truncated for readability)
+        if 'raw_results' in processing_results:
+            logger.info("\n🔧 RAW ULTRA ARENA OUTPUT (first 500 chars):")
+            raw_str = str(processing_results['raw_results'])[:500]
+            logger.info(f"   {raw_str}...")
+        
+        logger.info("=" * 80)
+        
     def get_test_claims(self, max_claims: int):
         """Get claims that have downloaded files for testing"""
         logger.info(f"🔍 Finding {max_claims} claims with downloaded files for testing...")
@@ -221,6 +269,7 @@ class PipelineTester:
                 processing_results = self.pdf_processor._process_claim_pdfs(claim_id, pdf_files)
                 
                 if processing_results:
+                    self.pretty_print_processing_results(claim_id, processing_results)
                     # Save results to database
                     success = self.db_ops.save_processing_results(claim_id, processing_results)
                     if success:
